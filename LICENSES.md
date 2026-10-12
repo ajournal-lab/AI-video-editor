@@ -15,7 +15,7 @@ There are three groups:
 | Bebas Neue (font) | `public/fonts/BebasNeue.ttf` | SIL Open Font License 1.1 | `public/fonts/OFL-BebasNeue.txt` |
 | Inter (font) | `public/fonts/Inter-*.ttf` | SIL Open Font License 1.1 | `public/fonts/OFL-Inter.txt` |
 | Montserrat (font) | `public/fonts/Montserrat-ExtraBold.ttf` | SIL Open Font License 1.1 | `public/fonts/OFL-Montserrat.txt` |
-| Playfair Display (font) | `public/fonts/PlayfairDisplay-Bold.ttf` | SIL Open Font License 1.1 | `public/fonts/OFL-PlayfairDisplay.txt` |
+| Playfair Display (font) | `public/fonts/PlayfairDisplay-Bold.ttf`, `PlayfairDisplay-Italic.ttf` (variable, from google/fonts) | SIL Open Font License 1.1 | `public/fonts/OFL-PlayfairDisplay.txt` |
 | Permanent Marker (font, Font Diner) | `public/fonts/PermanentMarker.ttf` | Apache-2.0 | `public/fonts/LICENSE-PermanentMarker.txt` |
 | shadcn/ui components (generated with the shadcn CLI, then edited) | `src/components/ui/*`, `cn()` in `src/lib/utils.ts` | MIT | `src/components/ui/LICENSE-shadcn-ui.md` |
 
@@ -74,6 +74,7 @@ Direct dependencies:
 | fast-json-patch | MIT | nanoid | MIT |
 | server-only | MIT | sonner | MIT |
 | zod | MIT | zustand | MIT |
+| qrcode (phone link QR) | MIT | @types/qrcode | MIT |
 | tailwindcss, @tailwindcss/postcss | MIT | typescript | Apache-2.0 |
 | eslint, eslint-config-next, @eslint/eslintrc | MIT | tsx | MIT |
 | @types/* | MIT | | |

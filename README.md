@@ -105,7 +105,7 @@ To stop ReelSmith, close the three windows.
 | Claude job fails with "permission denied" on a path | A data folder path contains spaces. Re-run `setup.bat -DataDir C:\ReelSmith` and move your data |
 | Whisper download fails with 401 | A stale Hugging Face token is cached. Delete `%USERPROFILE%\.cache\huggingface\token` (ReelSmith already sets `HF_HUB_DISABLE_IMPLICIT_TOKEN=1`) |
 | "Music from a link" fails | `worker\.venv\Scripts\python -m pip install -U yt-dlp` (sites change often). Instagram `/reels/audio/` pages don't work: use a `/reel/` link that uses the sound |
-| AI upscale is very slow | Expected on a CPU: the app shows an estimate first. Skip it, or set `REALESRGAN_GPU=0` if you have a Vulkan GPU |
+| AI upscale is very slow | Real-ESRGAN runs on any Vulkan GPU, including integrated graphics; the official build has no CPU mode. On an Intel UHD 620 it takes about 4 min per frame at 4x, so the app shows an estimate first. Skip it for long clips |
 | Background removal says the model is missing | Run setup again, or download `rvm_mobilenetv3_fp32.onnx` (see LICENSES.md) into `worker\models\` |
 | Port 3000 in use | Close the other app, or run `npx next dev -p 3001` and open that port |
 
@@ -143,7 +143,7 @@ On startup the runner checks that Claude Code is installed, that it's logged in 
 | `STYLE_DIR` | runner | Reference reels Claude may read for style. Set by setup; fallback `%USERPROFILE%/ReelSmith/style` |
 | `CLAUDE_MODEL`, `CLAUDE_BIN` | runner | Optional model override; path to `claude.exe` if auto-detection fails |
 | `PYTHON_BIN` | web, runner | Python that runs `worker/enhance.py` and yt-dlp. Setup sets it to the worker venv |
-| `REALESRGAN_BIN`, `REALESRGAN_MODEL`, `REALESRGAN_GPU` | enhance | AI upscale backend (see Enhance). Default: `REEL_STUDIO_DIR/tools/realesrgan`, CPU |
+| `REALESRGAN_BIN`, `REALESRGAN_MODEL`, `REALESRGAN_GPU` | enhance | AI upscale backend (see Enhance). Default: `REEL_STUDIO_DIR/tools/realesrgan`, the first Vulkan device (`REALESRGAN_GPU` picks another) |
 | `ANTHROPIC_API_KEY` | — | **Leave unset.** It would bill the API instead of your subscription; the runner strips it and warns |
 | `STORAGE_DIR` | web, worker, runner | Uploads, projects, renders, caches. Set by setup; fallback `./storage` |
 | `MATTE_MODEL` | worker | RobustVideoMatting ONNX model (default `worker/models/rvm_mobilenetv3_fp32.onnx`) |
@@ -152,6 +152,11 @@ On startup the runner checks that Claude Code is installed, that it's logged in 
 | `WEB_URL` | worker | Where to fetch relative media URLs (e.g. `/sample/voice.m4a`) when not on local disk |
 | `FFMPEG_BIN`, `FONTS_DIR`, `X264_PRESET`, `WORKER_POLL_SECONDS` | worker | Optional overrides |
 | `X264_PRESET`, `EXPORT_CRF`, `EXPORT_RC`, `EXPORT_KBPS` | worker | Export encode: preset `slow`, CRF `17`; `EXPORT_RC=2pass` uses two-pass at `EXPORT_KBPS` (default 17000) |
+| `CREATOR_DIR` | web, runner | Creator profiles (teardowns). Default `REEL_STUDIO_DIR/creator-profiles` |
+| `CLOUD_RENDER_TOKEN` | runner, web | Fine-grained GitHub token for "Render in cloud" (the private render repo only). Optional; the feature is off by default |
+| `TEARDOWN_SCENE` | teardown | ffmpeg scene score that counts as a cut (default 0.22) |
+| `PREVIEW_SHORT`, `PREVIEW_KBPS`, `PREVIEW_AUDIO` | worker | Phone preview encode: 720 px short side, 1400 kbit/s, AAC 96k |
+| `INSERT_PARALLEL`, `INSERT_CPU_BUSY` | worker | Animated inserts built at once (default 2), and the CPU % above which they build one at a time (default 70) |
 
 ## Using the editor
 
@@ -160,7 +165,7 @@ On startup the runner checks that Claude Code is installed, that it's logged in 
 - **Ripple delete** closes the gap on that track. On the **voice** track it removes that time range from the whole video, so visuals and captions stay in sync.
 - **Trim silences** (Audio tab) removes every pause longer than 0.7 s (adjustable) from the whole timeline.
 - **Captions** are derived from the voice clips + transcript, so they follow every trim, split, speed change and silence cut. Word edits are stored per word id.
-- **AI edits** (AI edit tab): your command becomes a Claude job, and you see its live log. Claude reads a summary of the timeline and writes `ai-edit.json` with high-level operations, which are validated. `replace_visual` is resolved to clips from your library. The browser applies the ops to a copy, shows a summary + JSON-patch diff and previews it in the player. Apply = one undoable step. Follow-up commands resume the same Claude session.
+- **Chat** (first tab): see *Chat* below. **AI edits** (AI edit tab): your command becomes a Claude job, and you see its live log. Claude reads a summary of the timeline and writes `ai-edit.json` with high-level operations, which are validated. `replace_visual` is resolved to clips from your library. The browser applies the ops to a copy, shows a summary + JSON-patch diff and previews it in the player. Apply = one undoable step. Follow-up commands resume the same Claude session.
 - **Enhance** (Enhance tab): see below.
 - **Versions**: named snapshots, restore (as an undoable change, with an automatic "before restore" snapshot), duplicate as a new project. Every render snapshots its exact timeline as a version, so the render history always shows what was exported.
 
@@ -174,7 +179,7 @@ Every AI step is an `AgentJob` row. The agent runner (`npm run agent`, `agent/ru
   - write only in the project folder, `storage/studio/<project>/`
   - Bash only for ffmpeg/ffprobe, the workspace's tools and skills, and scripts Claude writes in `edit/scripts/`
 - `--setting-sources project` and `--strict-mcp-config` keep your global settings and connectors out of headless runs.
-- `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and the Bedrock/Vertex/base-URL variables are removed from the child environment, so runs always use your subscription. The runner shows the login method and plan.
+- `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and the Bedrock/Vertex/base-URL variables are removed from the child environment, so runs use your subscription. The runner shows the login method and plan.
 
 **Results and logs**
 - Claude writes its answer to a JSON file in the project folder. The runner validates it against `src/agent/schemas.ts`. If it doesn't match, the runner resumes the same session with the errors, up to 2 times. The app reads only that file, never the chat.
@@ -183,6 +188,98 @@ Every AI step is an `AgentJob` row. The agent runner (`npm run agent`, `agent/ru
 - Local command jobs (`exec`, e.g. an AI upscale) use the same queue, log and cancel.
 
 **Self-check:** **Claude** in the editor's top bar → *Run self-check* tests the runner end to end (spawn, streaming, allowlist, schema validation, cancel). It probes every media file in the project with ffprobe.
+
+## Chat (prompt-driven editing)
+
+Every project has a **Chat** panel: the first tab in the editor, and the sidebar on the plan screen. Type what you want, e.g. "make a 30s reel in the style of @creator, cut the pauses, add captions, punchy zooms". ReelSmith turns it into workflow steps:
+
+| Step | What runs | Where it lands |
+|---|---|---|
+| `edit` | timeline ops (captions, zooms, text, transitions, cut pauses, …) | applied in the editor as **one undoable step** ("Chat: …"), on editable tracks |
+| `cut` | stage 1, the spoken cut (a plan job) | the plan screen to review |
+| `style` | stage 2, the style pass + key stills | applied to the timeline, then the stills to approve |
+| `stills` / `render` | key stills / a local export | the chat and the export list; renders only after the stills are approved |
+| `teardown` | a creator profile (see Creators) | the Creators page |
+| `taste_rule` | a proposed rule ("always…", "never…") | a **Save as taste rule** button in the reply |
+
+- **One conversation per project.** The chat turn, the cut, its revisions, the style pass and taste-rule wording all resume the project's single Claude session (`projectSession()` in `src/server/agent.ts`), so later instructions build on earlier ones. Progress streams live in the panel.
+- **Quick chips:** Cut pauses · Add captions · Apply creator style (pick a profile) · Show stills · Render. Cut pauses, Add captions, Show stills and Render run without Claude. Add captions still goes to Claude when a taste rule about captions applies.
+- **Timestamped corrections:** a message with several lines like `Around 0:18, cut the breath` is parsed (`src/lib/chat/fixes.ts`), shown as "N timestamped fixes → one rebuild", and applied as **one** revision. Times are reel times: the cut table on the plan screen has a **Reel** column. On a cut under review, fixes alone skip the chat turn and go straight to one plan revision.
+- **Start in the chat:** on the New edit page, turn on *Start in the chat*. The project opens on its chat, and your first message starts the cut.
+- Server: `src/server/chat.ts` (`chat/<job>.json` = `{reply, actions}`, schema `chat`). API: `GET/POST/PATCH /api/projects/:id/chat`.
+
+## Two-stage approval
+
+1. **Stage 1 · the spoken cut only.** Last take wins on repeated lines, and pauses and fillers are removed (the talking-head/best-take plan modes). Approve it on the plan screen, or send changes and timestamped fixes in the chat.
+2. **Stage 2 · the style pass.** It combines the creator's `style.json`, your taste rules, the brand kit and the defaults into timeline ops (job kind `style`, schema `style-pass`). The editor applies them as one undoable step. Then `worker/stills.py` renders **key stills** with the export engine: the hook, caption moments, text cards, transitions and a zoom hit. They appear in the chat panel. **Approve stills** unlocks rendering. A note under a still sends all the notes as one style revision.
+3. **Render gate:** after a style pass, `POST /renders` (and the chat's Render) return 409 until the stills are approved. If the timeline changed after approval, the export dialog warns but lets you render. Projects that never had a style pass render as before.
+
+A style pass requested before the cut is approved, or picked on the New edit page as a Creator style, starts on its own once the cut is approved. If its creator's teardown is still running, it waits for that too. State: `Project.pipeline` (`src/server/pipeline.ts`). API: `GET/POST /api/projects/:id/pipeline` (actions `style`, `style_applied`, `stills`, `approve_stills`, `fix_stills`, `gate`), `GET /api/projects/:id/stills?file=`.
+
+## Creators (creator teardown)
+
+**Creators** in the header. *New creator profile* takes a handle and 5 TikTok / YouTube Shorts links, checked live: supported site, public and reachable (yt-dlp metadata only). Instagram links get a warning and a suggestion to use the TikTok/Shorts version. You can also take the creator's latest 5. Notes are optional ("I like their captions and pacing"). **Analyse** queues two runner jobs:
+
+1. `worker/teardown.py` (local command, free): it downloads each video with yt-dlp, transcribes it with faster-whisper, finds cuts (ffmpeg scene detection, plus frame-difference jump cuts), measures shot lengths, the first 2 and 3 s, words per minute, the hook words, pauses, punch-in cuts and smooth zooms (frame-scale matching), audio onsets and cuts on a sound cue, and estimates whether there's a music bed. It also writes contact sheets and one key frame per category (hook, captions, zoom, cut, layout, ending). Progress per video (downloading → transcribing → measuring → done) goes to `progress.json`. One bad link doesn't sink the others. A failed download retries with a progressive format and can be retried or swapped from the page.
+2. A Claude job (heavy) reads the measurements and sheets and writes `style.json` (schema `creator-style`) and `teardown.md`. ReelSmith then adds the **consistency check** across the videos to both files. A number outside the tolerance around the median, or a category that differs from most videos, is labelled **MISMATCH**. "Varied" means no two videos agree.
+
+The results page has these tabs:
+- **Summary** cards: hook style, seconds between cuts, the first 2 seconds, captions (font feel, size, position, words on screen, colours), zoom pattern, visuals/overlays, sound cues, layout, structure.
+- **Consistency:** each video with a ✅ match / ⚠️ MISMATCH badge and the reasons. **Replace video** re-measures only that video, then re-analyses.
+- **Side by side:** the key frames of every video per category.
+- **Edit style:** sliders and dropdowns for pace, zoom strength, caption size/position, SFX frequency and so on. The measured version is kept as `style.measured.json`, and *Reset to measured* restores it.
+- **Teardown:** `teardown.md`, rendered.
+- **Your overrides:** your taste rules and the creator values they replace.
+
+**Manage profiles:** rename (projects that use the profile follow), duplicate, delete, re-analyse with new links, export/import as a `.zip` of `teardown.md` + `style.json`.
+
+**Use a profile:** the *Creator style* dropdown on the New edit page (every mode; it guides the plan and runs the stage-2 style pass after approval), the chat's *Apply creator style* chip, or "in the style of @handle" in the chat. Edits show the creator they use: a badge on the project card and "Style: @handle" in the editor.
+
+Files: `<CREATOR_DIR>/<handle>/` (default `REEL_STUDIO_DIR/creator-profiles`). Every Claude run can read this folder.
+
+API (`src/server/creators.ts`):
+
+| Method | Path | |
+|---|---|---|
+| GET | `/api/creators` | profiles with status, summary, video count, mismatches |
+| POST | `/api/creators` | `{handle, urls: 5 links \| null (latest 5), platform?, notes?}` → starts the teardown |
+| POST | `/api/creators/validate` | `{url}` → `{ok, level: ok\|warn\|error, site, message, title, uploader, durationSec}` |
+| POST | `/api/creators/import` | multipart `file` (.zip), optional `handle` |
+| GET / DELETE | `/api/creators/:handle` | detail (meta, jobs, progress, verdicts, overrides, style, measured style, teardown.md, measurements) / delete |
+| POST | `/api/creators/:handle/{rerun,cancel,replace,rename,duplicate,style,reset}` | re-analyse `{urls?, notes?}` · stop · `{videoId \| "", url}` replace or add one video · `{to}` · `{to}` · `{style}` save edits · back to measured |
+| GET | `/api/creators/:handle/export` | the zip |
+| GET | `/api/creators/:handle/file?path=` | sheets, frames, videos, transcripts inside the profile |
+
+No third-party teardown plugin is used. I couldn't find the ai-editor@nextwork plugin in any marketplace or repo, so I couldn't check its licence, and this feature is built from ReelSmith's own tools.
+
+## Taste rules and style priority
+
+**Priority when rules conflict: your taste rules > the client's brand kit (Settings) > the creator's style.json > defaults.**
+
+- **Taste rules** live in `rules.md` under `## Taste rules (override creator style)` as `T<n>. (date) [topic] rule`. Every Claude run reads them.
+- **Save as taste rule:**
+  - in the export dialog, under each finished render: write what you liked or disliked, and Claude (a light step) turns it into one reusable rule. You edit it, then save it to rules.md.
+  - from a chat reply that proposes one ("always…", "never…").
+- `src/lib/style/layers.ts` resolves every topic (caption style/case/font/colours/position, pacing, zooms, hook, sound effects) across the layers and lists each conflict with the winning layer. The style pass gets this table and reports its own conflicts. The chat panel shows **Which rule won**, and a creator page shows **Your overrides**.
+
+## AI engine
+
+Every AI step (chat, planning, the style pass, teardowns, taste-rule wording) runs `claude -p` on your **Claude subscription**. There is no other engine and no engine setting. If a run hits the subscription's usage limit, it fails with the reset time and the runner holds further Claude jobs until then. Local command jobs (matte, upscale, teardown measuring) are unaffected.
+
+## Render in cloud (GitHub Actions)
+
+**Off by default**, and it never runs without your click and confirmation. Turn it on in Settings, set an **existing private** repo (`owner/name`), and add `CLOUD_RENDER_TOKEN` to `.env`. Use a fine-grained token for that repo only, with Contents, Actions and Workflows read/write and Metadata read; billing read is optional and shows your free minutes. ReelSmith never creates repos and refuses public or internal ones.
+
+1. Export dialog → **Render in cloud…** prepares the bundle **locally**: the timeline version with its media paths rewritten, the media it uses, the render engine (`worker/*.py`), the fonts, and a workflow file. It also checks the repo is private. Nothing has left the machine yet.
+2. A confirmation dialog lists the repo (verified private), every media file and its size, the total, and your remaining free Actions minutes when GitHub reports them, plus a **Keep uploads** switch (default off). **Upload and render** is the only way forward; the start call needs a one-time token from step 1 (15 min).
+3. The runner job (`agent/cloud-render.ts`) checks the repo is private once more, then:
+   - uploads the bundle as one commit on a temporary branch `reelsmith-render/<id>`, whose own workflow runs `worker/cloud_entry.py` on `ubuntu-24.04` with apt ffmpeg
+   - follows the run (steps, progress)
+   - downloads the artifact into the project as a normal export with its quality report
+   - deletes the branch, the run (with its logs), the artifact (retention 1 day anyway) and the local bundle. Keep uploads skips the GitHub deletions.
+4. If it is cancelled or fails mid-way, the export dialog offers **Clean up leftovers on GitHub**. Deleted branches leave unreachable git objects until GitHub's own garbage collection.
+
+Files over 95 MB, or bundles over 900 MB, are refused (GitHub's blob limit): render those locally. A chat "render" is always local.
 
 ## Enhance
 
@@ -227,7 +324,7 @@ The engine is `worker/enhance.py`. The render worker, the editor previews and th
 4. **AI upscale** (sources under 1080 wide) uses Real-ESRGAN.
    - *Estimate upscale time* benchmarks the backend on part of one frame, then asks before running.
    - The upscale runs as a local job on the agent runner, chunk by chunk, into an intermediate file. The render reads that file instead of the source.
-   - `setup.bat` installs `realesrgan-ncnn-vulkan` into `REEL_STUDIO_DIR/tools/realesrgan/` (or set `REALESRGAN_BIN`). It's very slow without a GPU: on an Intel UHD 620 laptop it took about 130 s per frame. With a Vulkan GPU, set `REALESRGAN_GPU=0`.
+   - `setup.bat` installs `realesrgan-ncnn-vulkan` into `REEL_STUDIO_DIR/tools/realesrgan/` (or set `REALESRGAN_BIN`). The official build needs a Vulkan device (integrated graphics work); it has no CPU mode, so ReelSmith lets it pick the device. Measured on an Intel UHD 620 laptop: about 230 s per frame for 576×1024 → 4x, so 2 s of video ≈ 4 hours. Use it for short shots only.
 
 ## Music from a link
 
@@ -320,6 +417,21 @@ Cinematic Warm (`worker/grade.py`) is:
 How it is applied:
 - **Render:** a 33³ 3D LUT (`lut3d`) at the placed size, after Enhance and the clip's colour filters, plus a frame-fixed vignette mask.
 - **Preview:** the canvas mirrors the tone curve and the vignette. It approximates the skin protection with a global saturation cut.
+
+## Versions and phone preview
+
+- **Every render is a numbered version** (`v1`, `v2`, …, `TimelineVersion.number`) with **notes**: what changed since the previous version (`src/lib/timeline/changes.ts`: length, added/removed/moved/trimmed clips, captions, looks, inserts, effects) plus what you asked in the chat meanwhile. Notes are editable.
+- Top bar → **Versions** → *Renders*: each version's thumbnail, notes, status; play its phone preview inline; **Restore** (saves a "before restore" snapshot first, undoable); **MP4**; duplicate as a new project. Tick two versions → **Compare**: both play in sync (one play/seek control), each with its notes, plus a fresh diff between them. *Snapshots* holds the named manual versions.
+- **Phone preview:** after the export is mastered, the worker writes a 720p, ~1.4 Mbit/s copy (`RenderJob.previewUrl`) before the slower quality check finishes, so it shows up first. The Export dialog has *Preview*; Versions → **Phone** shows a QR code of `http://<this PC's Wi-Fi address>:<port>/m/<token>`, a page (no login, the token is the key; *New link* revokes it) listing your latest previews with their version and notes. The phone must be on the same Wi-Fi; allow Node.js through Windows Firewall on private networks if it doesn't open.
+
+## Audio safety
+
+- **Auto-duck:** every music clip ducks under the voice (`timeline.audio.autoDuck`, on by default) unless its *Lower under the voice* switch is off. The level is the Music panel's "Music level under voice".
+- **Sound effects** (short sounds: ≤ 8 s, or marked *Sound effect* in the Inspector) never duck. Each one stays at least **6 dB under the voice** (`audio.sfxHeadroomDb`). Every render measures the voice (integrated loudness of the voice clips) and each SFX (loudest 400 ms momentary loudness at its clip volume) with `worker/audio_safety.py`. A louder SFX is turned down by the difference + 0.5 dB in that export and **flagged** in the render report ("1 sound effect louder than voice − 6 dB · turned down").
+
+## Animated inserts (engine; the Inserts panel comes later)
+
+`worker/inserts.py` draws full-frame transparent VP9 layers with Pillow: an app screen in a phone sliding up behind you, a Follow CTA a cursor taps, a scrolling document, a UI demo with cursor and click ripples, and your reels orbiting you (a layer behind and a layer in front of you). They build as `InsertJob`s in the worker's **insert pool** (`worker/insert_pool.py`), in parallel with renders: 2 at a time, 1 while a render runs or the CPU is over 70%. Each status (queued with the reason, building %, done, failed) is in `/api/projects/<id>/inserts`. A render whose inserts are still building first renders the layers under them (lossless `under.mkv`), waits for them ("waiting for N inserts"), then composites the rest.
 
 ## Gemini quick-import (manual, no API cost)
 
@@ -425,14 +537,22 @@ ReelSmith is local-only. The agent runner drives Claude Code on your machine wit
 ## Project layout
 
 ```
-agent/runner.ts        Claude agent runner (npm run agent): claims AgentJobs, spawns claude -p / local commands, validates results
+agent/runner.ts        Claude agent runner (npm run agent): claims AgentJobs, spawns claude -p (your subscription) / local commands, validates results
 src/agent/             shared by runner + server: claude args & allowlist, binary lookup, config, result schemas, log events
 src/lib/timeline/      types, derive (shared math), ops (edit operations), ai (AI ops), factory
 src/components/editor/ Player (canvas preview), Timeline, panels (Media, Text, Captions, Audio, Enhance, AI, Inspector), store
 src/components/agent/  job log, Claude jobs dialog, Jobs page
-src/server/            prisma, storage, agent jobs, enhance, scenes, visuals, first cut, AI edit
+src/components/chat/   chat panel, stills review, "which rule won"; store.ts applies chat/style ops in the editor
+src/components/creators/ Creators pages: list, form with live link checks, results (summary, consistency, side by side, style editor)
+src/components/settings/ Settings: brand kit, cloud render
+src/server/            prisma, storage, agent jobs, enhance, scenes, visuals, first cut, AI edit,
+                       chat, pipeline (two-stage approval), style (taste rules + layers), creators, cloud, settings, renders
 src/app/api/           projects (+ ai-edit, enhance), voice, timeline, versions, renders, media, uploads, agent, files
 worker/                main loop, transcribe (faster-whisper), render (ffmpeg graph), enhance, ass (captions/text), timeline (mirror)
+                       stills (key stills), teardown (creator measurements), cloud_entry (GitHub Actions render)
+                       inserts + insert_pool (animated overlays, built in parallel), audio_safety (SFX vs voice)
+src/app/m/[token]/     the phone preview page (no login)
+agent/cloud-render.ts  upload -> Actions run -> download -> cleanup for "Render in cloud" (run by the runner)
 workspace/             template for the Claude workspace (REEL_STUDIO_DIR): rules.md, CLAUDE.md, tools, edit-reel skill
 setup.ps1, setup.bat   Windows installer with a pass/fail checklist; start.bat starts web, runner and worker
 ```
