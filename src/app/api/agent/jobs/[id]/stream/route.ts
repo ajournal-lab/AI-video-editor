@@ -42,9 +42,10 @@ export async function GET(req: Request, ctx: Ctx<{ id: string }>) {
         while (!closed) {
           const row = await prisma.agentJob.findUnique({ where: { id } });
           if (!row) break;
-          if (row.status !== lastStatus || TERMINAL.has(row.status)) {
-            if (row.status !== lastStatus) send("status", jobDTO(row));
-            lastStatus = row.status;
+          const key = row.status;
+          if (key !== lastStatus) {
+            send("status", jobDTO(row));
+            lastStatus = key;
           }
           // read new complete lines from the log
           let grew = false;

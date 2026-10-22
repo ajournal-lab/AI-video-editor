@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Check, Loader2, MessageSquare, Play, RotateCcw } from "lucide-react";
+import { ArrowLeft, Check, Loader2, Play, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/client/api";
 import { useAgentJob, type AgentJobDTO } from "@/lib/client/agent";
@@ -13,7 +13,8 @@ import { RunnerLine } from "@/components/agent/AgentPanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
+import { ChatPanel } from "@/components/chat/ChatPanel";
+import { useChatSync } from "@/components/chat/store";
 import { cn } from "@/lib/utils";
 
 type Asset = { id: string; type: string; url: string; thumbUrl: string | null; name: string; duration: number | null; width: number | null; height: number | null };
@@ -70,10 +71,10 @@ export function PlanScreen({ projectId }: { projectId: string }) {
   const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
-  const [feedback, setFeedback] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview>(null);
   const live = useAgentJob(state?.project.status === "planning" ? (state.job?.id ?? null) : null);
+  useChatSync(projectId, "plan");
 
   const load = useCallback(async () => {
     const r = await api<PlanState>(`/api/projects/${projectId}/plan`);
@@ -104,19 +105,6 @@ export function PlanScreen({ projectId }: { projectId: string }) {
     if (a) setPreview({ src: a.url, in: i, out: o, label: `${label} · ${a.name}` });
   };
 
-  const revise = async () => {
-    setBusy("Sending to Claude…");
-    try {
-      await api(`/api/projects/${projectId}/plan`, { method: "POST", json: { feedback, plan } });
-      setFeedback("");
-      setDirty(false);
-      await load();
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  };
   const approve = async () => {
     setBusy("Building the timeline…");
     try {
@@ -157,15 +145,46 @@ export function PlanScreen({ projectId }: { projectId: string }) {
           <h1 className="truncate text-xl font-semibold">{project.title}</h1>
           <p className="text-xs text-muted-foreground">
             {project.modeLabel} ·{" "}
-            {project.status === "planning" ? "Claude is planning the edit" : project.status === "review" ? "Review the plan, then approve" : project.status === "plan_failed" ? "Planning failed" : "Built"}
+            {project.status === "draft"
+              ? "Describe the reel in the chat: your first message starts the spoken cut"
+              : project.status === "planning"
+                ? "Claude is planning the edit"
+                : project.status === "review"
+                  ? "Review the plan, then approve"
+                  : project.status === "plan_failed"
+                    ? "Planning failed"
+                    : "Built"}
           </p>
         </div>
       </div>
 
-      {project.status === "planning" && (
-        <div className="space-y-3">
-          <RunnerLine />
-          <AgentLog job={live.job ?? state.job} events={live.events} onCancel={() => live.cancel().catch((e) => toast.error(e.message))} className="h-[65dvh]" />
+      {(project.status === "planning" || project.status === "draft") && (
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+          <div className="min-w-0 space-y-3">
+            <RunnerLine />
+            {project.status === "planning" ? (
+              <AgentLog job={live.job ?? state.job} events={live.events} onCancel={() => live.cancel().catch((e) => toast.error(e.message))} className="h-[65dvh]" />
+            ) : (
+              <div className="space-y-2 rounded-lg border p-3">
+                <p className="text-sm font-medium">Your clips</p>
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+                  {state.assets.map((a) => (
+                    <button key={a.id} type="button" onClick={() => show(a.id, 0, a.duration ?? 5, "Input")} className="space-y-1 text-left">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      {a.thumbUrl ? <img src={a.thumbUrl} alt="" className="aspect-[9/16] w-full rounded object-cover" /> : <div className="aspect-[9/16] rounded bg-muted" />}
+                      <span className="line-clamp-1 text-[11px] text-muted-foreground">{a.name}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="max-w-56">
+                  <SpanPlayer preview={preview} />
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="overflow-hidden rounded-lg border lg:sticky lg:top-4 lg:self-start">
+            <ChatPanel projectId={projectId} context="plan" onSent={() => load().catch(() => {})} className="h-[70dvh]" />
+          </div>
         </div>
       )}
 
@@ -200,7 +219,7 @@ export function PlanScreen({ projectId }: { projectId: string }) {
       )}
 
       {project.status === "review" && plan != null && (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
           <div className="min-w-0 space-y-4">
             <div className="rounded-lg border bg-card/40 p-3 text-sm whitespace-pre-wrap">{(plan as { summary: string }).summary}</div>
             {project.mode === "talking_head" && <TalkingHeadReview plan={plan as TalkingHeadPlan} onChange={update} assets={assets} show={show} />}
@@ -214,13 +233,20 @@ export function PlanScreen({ projectId }: { projectId: string }) {
             <Button className="w-full" onClick={approve} disabled={Boolean(busy)}>
               {busy === "Building the timeline…" ? <Loader2 className="animate-spin" /> : <Check />} Approve &amp; build
             </Button>
-            <div className="space-y-2 rounded-lg border p-2">
-              <Textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={3} placeholder="Or tell Claude what to change (your table edits are kept)…" className="text-sm" />
-              <Button size="sm" variant="secondary" className="w-full" onClick={revise} disabled={Boolean(busy) || feedback.trim().length < 2}>
-                <MessageSquare /> Revise with Claude
-              </Button>
+            {dirty && <p className="text-[11px] text-amber-300">You changed the plan. Approve to build it as shown (your edits are also sent with chat messages).</p>}
+            <div className="overflow-hidden rounded-lg border">
+              <p className="border-b px-3 py-1.5 text-[11px] text-muted-foreground">Stage 1 of 2: the spoken cut. Approve it, or tell Claude what to change.</p>
+              <ChatPanel
+                projectId={projectId}
+                context="plan"
+                getPlan={() => plan}
+                onSent={() => {
+                  setDirty(false);
+                  load().catch(() => {});
+                }}
+                className="h-[460px]"
+              />
             </div>
-            {dirty && <p className="text-[11px] text-amber-300">You changed the plan. Approve to build it as shown.</p>}
           </div>
         </div>
       )}
@@ -234,6 +260,12 @@ const nameOf = (assets: Map<string, Asset>, id: string) => assets.get(id)?.name 
 function TalkingHeadReview({ plan, onChange, assets, show }: ReviewProps<TalkingHeadPlan>) {
   const kept = plan.segments.filter((s) => s.include !== false);
   const total = kept.reduce((a, s) => a + s.out - s.in, 0);
+  // where each kept segment starts in the finished reel (timestamped fixes refer to these times)
+  const reelStart = plan.segments.reduce<number[]>((acc, s, i) => {
+    const prev = i ? acc[i - 1] + (plan.segments[i - 1].include === false ? 0 : plan.segments[i - 1].out - plan.segments[i - 1].in) : 0;
+    acc.push(prev);
+    return acc;
+  }, []);
   return (
     <div className="space-y-4">
       <section className="space-y-1">
@@ -249,6 +281,7 @@ function TalkingHeadReview({ plan, onChange, assets, show }: ReviewProps<Talking
             <tr>
               <Th>Keep</Th>
               <Th>#</Th>
+              <Th>Reel</Th>
               <Th>Source</Th>
               <Th>In → out</Th>
               <Th>Words</Th>
@@ -262,6 +295,9 @@ function TalkingHeadReview({ plan, onChange, assets, show }: ReviewProps<Talking
                   <Switch checked={s.include !== false} onCheckedChange={(v) => onChange({ ...plan, segments: plan.segments.map((x, j) => (j === i ? { ...x, include: v } : x)) })} />
                 </td>
                 <td className="px-2 py-1 text-xs text-muted-foreground">{i + 1}</td>
+                <td className="px-2 py-1 font-mono text-[11px] whitespace-nowrap text-violet-300" title="Time in the finished reel: use it for “Around 0:18, …” fixes">
+                  {s.include === false ? "–" : fmt(reelStart[i])}
+                </td>
                 <td className="max-w-32 truncate px-2 py-1 text-xs">{nameOf(assets, s.sourceId)}</td>
                 <td className="px-2 py-1 font-mono text-xs whitespace-nowrap">
                   {s.in.toFixed(2)} → {s.out.toFixed(2)}

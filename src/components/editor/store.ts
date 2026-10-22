@@ -33,6 +33,8 @@ interface EditorState {
 
   init(p: { projectId: string; title: string; timeline: Timeline; revision: number }): void;
   commit(next: Timeline, label?: string): void;
+  /** Replace the timeline without an undo step (generated content, e.g. looks rebuilt from the edit); autosaved. */
+  patch(next: Timeline): void;
   begin(): void;
   live(next: Timeline): void;
   end(label?: string): void;
@@ -69,7 +71,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   revision: 0,
   version: 0,
   assets: {},
-  panel: "media",
+  panel: "chat",
   replaceTarget: null,
 
   init: ({ projectId, title, timeline, revision }) =>
@@ -79,6 +81,12 @@ export const useEditor = create<EditorState>((set, get) => ({
     const { timeline, past, version } = get();
     if (next === timeline) return;
     set({ timeline: next, past: [...past, { tl: timeline, label }], future: [], version: version + 1, save: "dirty" });
+  },
+
+  patch: (next) => {
+    const { timeline, version, gestureBase } = get();
+    if (next === timeline || gestureBase) return;
+    set({ timeline: next, version: version + 1, save: "dirty" });
   },
 
   begin: () => set({ gestureBase: get().timeline }),

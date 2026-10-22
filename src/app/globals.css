@@ -9,6 +9,7 @@
 @font-face { font-family: "RS Montserrat"; src: url("/fonts/Montserrat-ExtraBold.ttf") format("truetype"); font-display: block; }
 @font-face { font-family: "RS Bebas"; src: url("/fonts/BebasNeue.ttf") format("truetype"); font-display: block; }
 @font-face { font-family: "RS Playfair"; src: url("/fonts/PlayfairDisplay-Bold.ttf") format("truetype"); font-display: block; }
+@font-face { font-family: "RS Playfair Italic"; src: url("/fonts/PlayfairDisplay-Italic.ttf") format("truetype"); font-display: block; }
 @font-face { font-family: "RS Marker"; src: url("/fonts/PermanentMarker.ttf") format("truetype"); font-display: block; }
 
 @theme inline {

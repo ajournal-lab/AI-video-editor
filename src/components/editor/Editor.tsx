@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Captions, Check, CloudOff, FolderOpen, ImageIcon, Loader2, Redo2, SlidersHorizontal, Sparkles, Type, Undo2, Waves, Wand2 } from "lucide-react";
+import { ArrowLeft, Captions, Palette, Check, CloudOff, FolderOpen, ImageIcon, Loader2, MessagesSquare, Redo2, SlidersHorizontal, Sparkles, Type, Undo2, Waves, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import type { Timeline as TL } from "@/lib/timeline/types";
 import { api } from "@/lib/client/api";
@@ -28,10 +28,17 @@ import { BackgroundPanel } from "./panels/BackgroundPanel";
 import { AgentPanel } from "@/components/agent/AgentPanel";
 import { VersionsDialog } from "./VersionsDialog";
 import { ExportDialog } from "./ExportDialog";
+import { ChatPanel } from "@/components/chat/ChatPanel";
+import { useChat, useChatSync } from "@/components/chat/store";
+import { useInsertSync } from "./inserts-store";
+import { useLooksSync } from "./looks-hook";
+import { LooksPanel } from "./panels/LooksPanel";
 
 const PANELS = [
+  { id: "chat", label: "Chat", icon: MessagesSquare },
   { id: "media", label: "Media", icon: FolderOpen },
   { id: "text", label: "Text", icon: Type },
+  { id: "looks", label: "Looks", icon: Palette },
   { id: "captions", label: "Captions", icon: Captions },
   { id: "audio", label: "Audio", icon: Waves },
   { id: "enhance", label: "Enhance", icon: Wand2 },
@@ -61,6 +68,10 @@ export function Editor({ project, timeline, revision }: { project: { id: string;
 }
 
 function EditorInner() {
+  const projectId = useEditor((s) => s.projectId);
+  useChatSync(projectId, "editor"); // chat replies + style passes land on the timeline even when the chat panel is closed
+  useInsertSync(projectId); // animated inserts build in the background; queue new ones and follow their status
+  useLooksSync(projectId); // looks rebuild when the edit or the look settings change; cut-outs queue and switch on
   useAutosave();
   useShortcuts();
   usePasteImages();
@@ -71,7 +82,7 @@ function EditorInner() {
 
   // On narrow screens the inspector lives in the left panel; jump to it on selection.
   useEffect(() => {
-    if (selection.length && window.innerWidth < 1280 && useEditor.getState().panel !== "ai") setPanel("inspect");
+    if (selection.length && window.innerWidth < 1280 && !["ai", "chat"].includes(useEditor.getState().panel)) setPanel("inspect");
   }, [selection, setPanel]);
 
   return (
@@ -95,9 +106,11 @@ function EditorInner() {
             </button>
           ))}
         </nav>
-        <aside className="w-72 shrink-0 overflow-y-auto border-r lg:w-80">
+        <aside className={cn("w-72 shrink-0 border-r lg:w-80", panel === "chat" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
+          {panel === "chat" && <ChatPanel projectId={projectId} context="editor" className="h-full" />}
           {panel === "media" && <MediaPanel />}
           {panel === "text" && <TextPanel />}
+          {panel === "looks" && <LooksPanel />}
           {panel === "captions" && <CaptionsPanel />}
           {panel === "audio" && <AudioPanel />}
           {panel === "enhance" && <EnhancePanel />}
@@ -176,6 +189,7 @@ function TopBar() {
         aria-label="Project title"
       />
       <SaveBadge state={save} />
+      <CreatorBadge />
       <div className="ml-auto flex items-center gap-1">
         <Tooltip>
           <TooltipTrigger asChild>
@@ -206,6 +220,17 @@ function TopBar() {
         <ExportDialog />
       </div>
     </header>
+  );
+}
+
+/** Which creator style this edit uses (set on the New edit page or by the chat), linked to the profile. */
+function CreatorBadge() {
+  const creator = useChat((s) => s.state?.pipeline?.creator);
+  if (!creator) return null;
+  return (
+    <Link href={`/creators/${creator}`} className="hidden truncate rounded-full bg-violet-600/20 px-2 py-0.5 text-[11px] text-violet-200 hover:bg-violet-600/30 md:block" title="Creator style used by this edit">
+      Style: @{creator}
+    </Link>
   );
 }
 

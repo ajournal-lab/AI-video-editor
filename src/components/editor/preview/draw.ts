@@ -4,8 +4,21 @@
 import {
   activeWordIndex,
   adjacentPrev,
+  CAPTION_POP,
+  CAPTION_POP_FROM,
   CAPTION_PRESETS,
+  CAPTION_REVEAL,
   captionLines,
+  captionStyleAt,
+  estTextWidth,
+  kineticIndex,
+  kineticPlace,
+  lookSegments,
+  sparkleAlpha,
+  sparkleLevel,
+  sparkleScale,
+  sparkleSpots,
+  SPARKLE_COLOR,
   clamp,
   clipEnd,
   colorOps,
@@ -27,6 +40,7 @@ import {
   type WordState,
 } from "@/lib/timeline/derive";
 import { FONTS, cssFont } from "@/lib/timeline/fonts";
+import { PUNCH_COLOR } from "@/lib/timeline/lookdefs";
 import type { Enhance, Filters, Grade, TextClip, Timeline, VideoTrack, VisualClip } from "@/lib/timeline/types";
 
 export interface FrameSource {
@@ -140,6 +154,16 @@ function drawVisual(ctx: CanvasRenderingContext2D, tl: Timeline, clip: VisualCli
     ctx.filter = "none";
   } else {
     const s = src.source(clip);
+    if (clip.insert && !(s && s.w)) {
+      drawInsertPlaceholder(ctx, W, H, clip);
+      ctx.restore();
+      return;
+    }
+    // a Cut-out copy shows only the speaker: nothing until its matte is on and loaded (the render skips it likewise)
+    if (clip.cutout && !(clip.matte?.on && src.matte?.(clip)?.w)) {
+      ctx.restore();
+      return;
+    }
     if (s && s.w && s.h) {
       const p = placement(s.w, s.h, W, H, clip.transform);
       const f = filterUrl(clip.filters, clip.enhance, clip.grade);
@@ -164,6 +188,25 @@ function drawVisual(ctx: CanvasRenderingContext2D, tl: Timeline, clip: VisualCli
       }
     }
   }
+  ctx.restore();
+}
+
+/** An insert that is still building: a dashed frame with its name, so its place and length are visible. */
+function drawInsertPlaceholder(ctx: CanvasRenderingContext2D, W: number, H: number, clip: VisualClip) {
+  if (clip.insert?.layer === "front") return;
+  ctx.save();
+  ctx.setLineDash([24, 16]);
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = "rgba(167,139,250,0.9)";
+  ctx.fillStyle = "rgba(76,29,149,0.35)";
+  ctx.fillRect(W * 0.12, H * 0.3, W * 0.76, H * 0.32);
+  ctx.strokeRect(W * 0.12, H * 0.3, W * 0.76, H * 0.32);
+  ctx.fillStyle = "#fff";
+  ctx.font = cssFont("inter", 44);
+  ctx.textAlign = "center";
+  ctx.fillText(clip.name, W / 2, H * 0.45);
+  ctx.font = cssFont("inter", 30);
+  ctx.fillText("building in the background…", W / 2, H * 0.49);
   ctx.restore();
 }
 
@@ -258,6 +301,7 @@ function drawTextClip(ctx: CanvasRenderingContext2D, tl: Timeline, clip: TextCli
   ctx.translate(st.x * tl.width, st.y * tl.height + anim.dy);
   ctx.scale(anim.scale, anim.scale);
   ctx.font = cssFont(st.font, px);
+  ctx.letterSpacing = `${st.letterSpacing ?? 0}px`;
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   ctx.lineJoin = "round";
@@ -295,6 +339,33 @@ function drawTextClip(ctx: CanvasRenderingContext2D, tl: Timeline, clip: TextCli
     ctx.fillText(line, 0, y);
   });
   ctx.restore();
+  if (st.sparkles) drawSparkles(ctx, tl, clip, t, anim.alpha, lines, lineH);
+}
+
+/** Twinkling stars around the text box (positions from the estimated width, like worker/ass.py). */
+function drawSparkles(ctx: CanvasRenderingContext2D, tl: Timeline, clip: TextClip, t: number, alpha: number, lines: string[], lineH: number) {
+  const st = clip.style;
+  const hw = Math.max(...lines.map((l) => estTextWidth(l, st.font, st.size, st.letterSpacing ?? 0, st.uppercase))) / 2;
+  const hh = (lines.length * lineH) / 2;
+  const cx = st.x * tl.width;
+  const cy = st.y * tl.height;
+  for (const s of sparkleSpots(hw, hh)) {
+    const v = sparkleLevel(t - clip.start, s.phase);
+    const k = (s.size / 40) * sparkleScale(v);
+    ctx.save();
+    ctx.globalAlpha *= alpha * sparkleAlpha(v);
+    ctx.translate(cx + s.x, cy + s.y);
+    ctx.scale(k, k);
+    ctx.beginPath();
+    ctx.moveTo(0, -20);
+    ctx.bezierCurveTo(3, -3, 3, -3, 20, 0);
+    ctx.bezierCurveTo(3, 3, 3, 3, 0, 20);
+    ctx.bezierCurveTo(-3, 3, -3, 3, -20, 0);
+    ctx.bezierCurveTo(-3, -3, -3, -3, 0, -20);
+    ctx.fillStyle = SPARKLE_COLOR;
+    ctx.fill();
+    ctx.restore();
+  }
 }
 
 // ---------------------------------------------------------------- captions
@@ -309,27 +380,51 @@ export function cachedCaptionLines(tl: Timeline) {
   return lines;
 }
 
+const kinCache = new WeakMap<Timeline, Map<CaptionLine, number>>();
+
 function drawCaptions(ctx: CanvasRenderingContext2D, tl: Timeline, t: number) {
   const cap = tl.captions;
   if (!cap.enabled) return;
-  const line = cachedCaptionLines(tl).find((l) => t >= l.start && t < l.end);
+  const lines = cachedCaptionLines(tl);
+  const line = lines.find((l) => t >= l.start && t < l.end);
   if (!line) return;
-  const look = CAPTION_PRESETS[cap.style].look(cap.size);
+  const segs = lookSegments(tl);
+  const style = captionStyleAt(tl, segs, line.start);
+  const look = CAPTION_PRESETS[style].look(cap.size);
+  const punch = new Set(tl.looks?.punchWords ?? []);
   const F = FONTS[look.font];
-  const px = look.size;
+  let px = look.size;
+  let cx = tl.width / 2;
+  let cy = (look.y ?? cap.y) * tl.height;
+  if (look.layout === "kinetic") {
+    let idx = kinCache.get(tl);
+    if (!idx) kinCache.set(tl, (idx = kineticIndex(lines, tl, segs)));
+    const pl = kineticPlace(line, idx.get(line) ?? 0, look, tl.width);
+    [cx, cy, px] = [pl.x * tl.width, pl.y * tl.height, look.size * pl.scale];
+  }
   const lineH = (F.asc + F.desc) * px;
   const active = Math.max(0, activeWordIndex(line, t));
   ctx.save();
+  // whole-line entrance: fade (calm / editorial) or pop (kinetic), like fad / t tags in worker/ass.py
+  if (look.lineFade) ctx.globalAlpha *= clamp((t - line.start) / look.lineFade, 0, 1);
+  if (look.pop) {
+    const p = clamp((t - line.start) / CAPTION_POP, 0, 1);
+    const sc = CAPTION_POP_FROM + (1 - CAPTION_POP_FROM) * p;
+    ctx.translate(cx, cy);
+    ctx.scale(sc, sc);
+    ctx.translate(-cx, -cy);
+  }
   ctx.font = cssFont(look.font, px);
+  ctx.letterSpacing = `${look.letterSpacing ?? 0}px`;
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
   ctx.lineJoin = "round";
-  const words = line.words.map((w) => (look.uppercase ? w.text.toUpperCase() : w.text));
+  const words = line.words.map((w) => (look.uppercase ? w.text.toUpperCase() : look.lowercase ? w.text.toLowerCase() : w.text));
   const widths = words.map((w) => ctx.measureText(w).width);
   const space = ctx.measureText(" ").width;
   const total = widths.reduce((a, b) => a + b, 0) + space * (words.length - 1);
-  const x0 = tl.width / 2 - total / 2;
-  const top = cap.y * tl.height - lineH / 2;
+  const x0 = cx - total / 2;
+  const top = cy - lineH / 2;
   const baseline = top + F.asc * px;
   if (look.box) {
     ctx.save();
@@ -338,10 +433,18 @@ function drawCaptions(ctx: CanvasRenderingContext2D, tl: Timeline, t: number) {
     ctx.fillRect(x0 - look.box.pad, top - look.box.pad, total + look.box.pad * 2, lineH + look.box.pad * 2);
     ctx.restore();
   }
+  const base = ctx.globalAlpha;
   let x = x0;
   words.forEach((word, i) => {
     const state: WordState = i < active ? "past" : i === active ? "active" : "future";
-    const { color, opacity } = look.word[state];
+    const w = look.word[state];
+    const color = punch.has(line.words[i].id) ? PUNCH_COLOR : w.color;
+    // entrance (fades fill, outline and shadow): the line fade, and with reveal the word being spoken fades in over
+    // CAPTION_REVEAL (from the word, or from the line for word 0) while later words stay hidden.
+    // The word's opacity applies to its fill only (as before).
+    let ent = 1;
+    if (look.reveal) ent = state === "future" ? 0 : state === "active" ? clamp((t - (i > 0 ? line.words[i].start : line.start)) / CAPTION_REVEAL, 0, 1) : 1;
+    ctx.globalAlpha = base * ent;
     if (look.shadow > 0) {
       ctx.fillStyle = ctx.strokeStyle = "rgba(0,0,0,0.5)";
       if (look.outline > 0) {
@@ -355,10 +458,9 @@ function drawCaptions(ctx: CanvasRenderingContext2D, tl: Timeline, t: number) {
       ctx.strokeStyle = look.outlineColor;
       ctx.strokeText(word, x, baseline);
     }
-    ctx.globalAlpha = opacity;
+    ctx.globalAlpha = base * ent * w.opacity;
     ctx.fillStyle = color;
     ctx.fillText(word, x, baseline);
-    ctx.globalAlpha = 1;
     x += widths[i] + space;
   });
   ctx.restore();
@@ -384,6 +486,8 @@ export function drawFrame(ctx: CanvasRenderingContext2D, tl: Timeline, t: number
   for (let i = tracks.length - 1; i >= 0; i--) {
     const tr = tracks[i];
     if (tr.kind === "video") drawVideoTrack(ctx, tl, tr, t, src);
+    // "behind" text tracks sit among the video tracks (words behind the speaker's cut-out)
+    else if (tr.kind === "text" && tr.behind) for (const c of tr.clips) if (t >= c.start && t < clipEnd(c)) drawTextClip(ctx, tl, c, t);
   }
   ctx.restore();
   if (fx.flash > 1e-3) {
@@ -396,7 +500,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, tl: Timeline, t: number
   }
   for (let i = tracks.length - 1; i >= 0; i--) {
     const tr = tracks[i];
-    if (tr.kind === "text") for (const c of tr.clips) if (t >= c.start && t < clipEnd(c)) drawTextClip(ctx, tl, c, t);
+    if (tr.kind === "text" && !tr.behind) for (const c of tr.clips) if (t >= c.start && t < clipEnd(c)) drawTextClip(ctx, tl, c, t);
     if (tr.kind === "captions") drawCaptions(ctx, tl, t);
   }
 }

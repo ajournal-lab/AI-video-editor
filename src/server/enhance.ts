@@ -36,6 +36,8 @@ export function visualClips(tl: Timeline): VisualClip[] {
 export function enhanceSpec(tl: Timeline): SpecClip[] {
   const out: SpecClip[] = [];
   for (const c of visualClips(tl)) {
+    // cut-out copies (looks) take their main clip's settings; inserts are graphics
+    if (c.cutout || c.insert || c.gen) continue;
     const p = localMediaPath(c.src);
     if (!p) continue;
     const len = c.type === "video" ? c.duration * c.speed : 0;
@@ -87,7 +89,7 @@ export function enhancePrompt(projectDir: string) {
    One entry per clip in analysis.json. Settings keys: stabilize, denoise, sharpen, color, match (same shapes as in
    analysis.json). Never add "upscale": the user decides about AI upscaling after seeing a time estimate.
 
-Apply the "Enhance defaults" section of rules.md.`;
+Apply taste checklist rule R36 (Enhance) and every other active rule that touches picture quality (R29-R37).`;
 }
 
 /** Run worker/enhance.py and return stdout (throws with stderr on failure). */

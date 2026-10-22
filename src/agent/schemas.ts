@@ -40,6 +40,10 @@ const OP_REQUIRED = {
   trim_clip: ["clipIds"],
   split: ["time"],
   remove_range: ["start", "end"],
+  zoom: ["scale"], // + clipIds, or start/end
+  add_fx: ["time"],
+  clear_fx: [],
+  set_looks: [],
 } as const;
 export const AI_OP_NAMES = Object.keys(OP_REQUIRED) as (keyof typeof OP_REQUIRED)[];
 
@@ -65,13 +69,13 @@ const aiOp = z
     textPreset: z.enum(["title", "lower-third", "headline"]).optional(),
     color: z.string().optional(),
     size: num.positive().optional(),
-    font: z.enum(["inter", "montserrat", "bebas", "playfair", "marker"]).optional(),
+    font: z.enum(["inter", "montserrat", "bebas", "playfair", "playfair-italic", "marker"]).optional(),
     x: num.optional(),
     y: num.optional(),
     animIn: z.enum(["none", "fade", "slide-up", "pop"]).optional(),
     animOut: z.enum(["none", "fade", "slide-down", "pop"]).optional(),
     enabled: z.boolean().optional(),
-    captionStyle: z.enum(["bold", "karaoke", "minimal", "boxed"]).optional(),
+    captionStyle: z.enum(["bold", "karaoke", "minimal", "boxed", "kinetic", "calm", "editorial"]).optional(),
     duck: z.boolean().optional(),
     duckLevel: num.min(0).max(1).optional(),
     start: num.min(0).optional(),
@@ -79,6 +83,13 @@ const aiOp = z
     duration: num.positive().optional(),
     time: num.min(0).optional(),
     minGap: num.positive().optional(),
+    scale: num.min(1).max(1.5).optional(),
+    fx: z.enum(["punch", "shake", "flash"]).optional(),
+    strength: num.min(0).max(1).optional(),
+    look: z.enum(["bold", "cool_girl", "cool_dude", "none"]).optional(),
+    default: z.boolean().optional(),
+    phrase: z.string().max(200).optional(),
+    clear: z.boolean().optional(),
   })
   .superRefine((o, ctx) => {
     for (const f of OP_REQUIRED[o.op]) {
@@ -222,6 +233,172 @@ export type VoiceoverPlan = z.infer<typeof voiceoverPlan>;
 export type MusicPlan = z.infer<typeof musicPlan>;
 export type AutoClipPlan = z.infer<typeof autoClipPlan>;
 
+// ---------------------------------------------------------------- chat (src/server/chat.ts)
+// One chat instruction -> the workflow steps it needs. ReelSmith runs the steps as later turns of the same session.
+const STAGE1_MODES = ["talking_head", "best_take", "voiceover_broll", "music", "auto_clip"] as const;
+const chatAction = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("edit"), ops: z.array(aiOp).min(1), why: z.string().optional() }), // timeline edits, now
+  z.object({ type: z.literal("cut"), brief: z.string(), mode: z.enum(STAGE1_MODES).nullish() }), // stage 1: the spoken cut
+  z.object({ type: z.literal("style"), creator: z.string().nullish(), brief: z.string() }), // stage 2: style pass + stills
+  z.object({ type: z.literal("stills") }),
+  z.object({ type: z.literal("render"), quality: z.enum(["720p", "1080p"]).nullish() }),
+  z.object({ type: z.literal("teardown"), handle: z.string().min(1), platform: z.enum(["tiktok", "youtube"]).nullish(), urls: z.array(z.string().url()).max(5).nullish() }),
+  z.object({ type: z.literal("taste_rule"), rule: z.string().min(3).max(400), topic: z.string().min(1).max(40) }),
+]);
+export const chatResultSchema = z.object({ reply: z.string().min(1), actions: z.array(chatAction) });
+export type ChatResult = z.infer<typeof chatResultSchema>;
+export type ChatAction = z.infer<typeof chatAction>;
+
+// ---------------------------------------------------------------- style pass (src/server/pipeline.ts)
+export const STILL_KINDS = ["hook", "caption", "card", "transition", "zoom", "other"] as const;
+export const LAYERS = ["taste", "brand", "creator", "default"] as const;
+export const stylePassSchema = z.object({
+  summary: z.string().min(1),
+  ops: z.array(aiOp),
+  // key moments to check before rendering: the hook, caption moments, visual cards, transitions
+  stills: z.array(z.object({ t: t, kind: z.enum(STILL_KINDS), label: z.string().min(1).max(80), why: z.string().optional() })).min(1).max(12),
+  // every place where the layers disagreed, and which one won (taste > brand > creator > default)
+  conflicts: z.array(
+    z.object({
+      topic: z.string().min(1),
+      winner: z.enum(LAYERS),
+      chosen: z.string(),
+      overridden: z.array(z.object({ layer: z.enum(LAYERS), value: z.string() })),
+      rule: z.string().optional(), // e.g. "R14" for a taste-checklist rule
+    }),
+  ),
+});
+export type StylePass = z.infer<typeof stylePassSchema>;
+
+// ---------------------------------------------------------------- taste rule (feedback -> reusable rule)
+export const tasteRuleSchema = z.object({
+  rule: z.string().min(5).max(400), // imperative, reusable: "Captions: never karaoke; one line, max 3 words."
+  topic: z.string().min(1).max(40), // captions | pacing | zooms | hook | text | transitions | sound | color | layout | other
+  why: z.string().optional(),
+});
+export type TasteRuleResult = z.infer<typeof tasteRuleSchema>;
+
+// ---------------------------------------------------------------- notes -> rules (src/server/rules.ts, taste checklist R2/R6)
+// Every job that handles the user's feedback first writes rules/<job id>.json: one entry per note, in the user's words.
+// Not a job's main output (a plan / style job still validates its own file), so it is read leniently by ReelSmith.
+export const NOTE_KINDS = ["rule", "reinforces", "one_off"] as const;
+export const notesSchema = z.object({
+  notes: z.array(
+    z.object({
+      words: z.string().min(1).max(2000), // the note exactly as the user said it
+      kind: z.enum(NOTE_KINDS),
+      rule: z
+        .object({
+          title: z.string().min(3).max(160),
+          inPractice: z.string().min(3).max(1500),
+          topic: z.string().min(1).max(40),
+          type: z.enum(["taste", "default", "hard", "process"]).default("taste"),
+        })
+        .nullish(),
+      reinforces: z.string().regex(/^R\d+$/).nullish(),
+      conflictsWith: z.array(z.string().regex(/^R\d+$/)).default([]),
+      conflictWhy: z.string().max(600).nullish(),
+    }),
+  ),
+});
+export type NotesResult = z.infer<typeof notesSchema>;
+
+// ---------------------------------------------------------------- rule check (src/server/rulecheck.ts, taste checklist R5)
+export const ruleCheckSchema = z.object({
+  summary: z.string().min(1), // 1-3 sentences
+  checked: z.number().int().min(0), // how many rules were checked
+  findings: z.array(
+    z.object({
+      rule: z.string().regex(/^R\d+$/),
+      severity: z.enum(["fail", "warn"]), // fail = breaks the rule, warn = borderline / can't be fully checked from the draft
+      where: z.string().max(300), // reel time, plan entry or still number
+      problem: z.string().min(1).max(800),
+      fix: z.string().max(800), // what to change, at the cause, across the whole video
+    }),
+  ),
+  passed: z.array(z.string()).default([]),
+  notApplicable: z.array(z.string()).default([]),
+});
+export type RuleCheckReport = z.infer<typeof ruleCheckSchema>;
+
+// ---------------------------------------------------------------- creator teardown (src/server/creators.ts)
+// Claude writes style.json from worker/teardown.py's measurements + the contact sheets. Numbers come from the
+// measurements; the categorical fields are Claude's reading of the sheets. ReelSmith adds "consistency" itself.
+const n0 = num.nullish();
+const s0 = z.string().nullish();
+export const HOOK_TYPES = ["question", "bold-claim", "result-first", "pattern-interrupt", "story", "list-teaser", "demo", "other"] as const;
+export const LAYOUTS = ["talking-head", "full-body", "broll-heavy", "split-screen", "green-screen", "text-on-video", "screen-recording", "mixed"] as const;
+export const STRUCTURES = ["list", "timeline", "story", "tutorial", "day-in-life", "transformation", "reaction", "other"] as const;
+export const CAPTION_POSITIONS = ["top", "upper-middle", "middle", "lower-middle", "bottom", "none"] as const;
+export const creatorStyleSchema = z.object({
+  handle: z.string().min(1),
+  platform: z.enum(["tiktok", "youtube", "mixed"]),
+  summary: z.string().min(1), // 2-4 sentences: what makes this creator's edits recognisable
+  videos: z
+    .array(
+      z.object({
+        id: z.string(),
+        url: s0,
+        title: s0,
+        // Claude's reading of this video's sheets (used for the consistency check across videos)
+        observed: z.object({
+          // categories are compared across the videos (consistency check); the *Detail fields are free text
+          hookType: z.enum(HOOK_TYPES).nullish(),
+          hookDetail: s0,
+          captionStyle: z.enum(["bold", "karaoke", "minimal", "boxed", "none"]).nullish(),
+          captionPosition: z.enum(CAPTION_POSITIONS).nullish(),
+          captionCase: z.enum(["upper", "lower", "sentence", "mixed"]).nullish(),
+          zoomStyle: z.enum(["punch", "smooth", "mixed", "none"]).nullish(),
+          layout: z.enum(LAYOUTS).nullish(),
+          layoutDetail: s0,
+          music: z.boolean().nullish(),
+          structureType: z.enum(STRUCTURES).nullish(),
+          structure: s0, // free text, e.g. "hook -> 3 tips -> CTA"
+        }),
+      }),
+    )
+    .min(1),
+  hooks: z.object({ pattern: z.string(), textOnScreen: z.boolean().nullish(), firstWordSec: n0, examples: z.array(z.string()).default([]), notes: s0 }),
+  pacing: z.object({
+    avgShotSec: n0,
+    medianShotSec: n0,
+    cutsPerSec: n0,
+    cutsFirst3s: n0,
+    wordsPerMin: n0,
+    pausesRemoved: z.boolean().nullish(),
+    first2s: z.object({ cuts: n0, words: n0, notes: s0 }).nullish(), // what happens before the viewer can scroll away
+    notes: s0,
+  }),
+  structure: z.object({ beats: z.array(z.string()).default([]), avgDurationSec: n0, cta: s0, notes: s0 }),
+  captions: z.object({
+    present: z.boolean(),
+    style: z.enum(["bold", "karaoke", "minimal", "boxed"]).nullish(),
+    position: z.enum(CAPTION_POSITIONS).nullish(),
+    y: num.min(0).max(1).nullish(), // caption centre as a fraction of the frame height
+    case: z.enum(["upper", "lower", "sentence", "mixed"]).nullish(),
+    wordsPerLine: n0,
+    wordsOnScreen: n0, // words visible at once
+    size: z.enum(["small", "medium", "large", "huge"]).nullish(),
+    sizePx: num.min(20).max(300).nullish(), // caption size in 1080x1920 design pixels
+    font: s0, // closest of inter | montserrat | bebas | playfair | marker, or a description
+    fontFeel: s0, // e.g. "heavy rounded sans", "condensed all-caps"
+    color: s0, // #RRGGBB
+    highlight: s0, // #RRGGBB of the active / emphasised word
+    notes: s0,
+  }),
+  zooms: z.object({ perMinute: n0, style: z.enum(["punch", "smooth", "mixed", "none"]).nullish(), typicalScale: n0, onEmphasis: z.boolean().nullish(), notes: s0 }),
+  sound: z.object({ music: z.boolean().nullish(), musicLevel: s0, sfx: z.array(z.string()).default([]), sfxPerMin: n0, cutsOnSoundCue: n0, notes: s0 }),
+  visuals: z
+    .object({ overlays: z.array(z.string()).default([]), emojis: z.boolean().nullish(), broll: z.boolean().nullish(), progressBar: z.boolean().nullish(), notes: s0 })
+    .nullish(), // stickers, arrows, emoji, b-roll cutaways, screenshots, progress bars...
+  layout: z.object({ framing: s0, faceY: n0, broll: z.boolean().nullish(), textCards: z.boolean().nullish(), splitScreen: z.boolean().nullish(), notes: s0 }),
+  // filled in by ReelSmith after validation
+  consistency: z.array(z.any()).optional(),
+  consistencyVersion: z.number().optional(),
+  edited: z.object({ at: z.string(), fields: z.array(z.string()) }).nullish(), // values the user changed on the Creators page
+});
+export type CreatorStyle = z.infer<typeof creatorStyleSchema>;
+
 // ---------------------------------------------------------------- registry
 export const SCHEMAS = {
   "media-check": mediaCheckSchema,
@@ -232,6 +409,11 @@ export const SCHEMAS = {
   "plan-voiceover_broll": voiceoverPlan,
   "plan-music": musicPlan,
   "plan-auto_clip": autoClipPlan,
+  chat: chatResultSchema,
+  "style-pass": stylePassSchema,
+  "taste-rule": tasteRuleSchema,
+  "rule-check": ruleCheckSchema,
+  "creator-style": creatorStyleSchema,
 } as const;
 export type SchemaName = keyof typeof SCHEMAS;
 

@@ -20,9 +20,20 @@ Operations (only use the fields each needs):
 - add_text {text, start, duration?, textPreset?, color?, size?, font?, y?, animIn?, animOut?}: always set textPreset: title (big title card), lower-third (name/tip bar near the bottom) or headline (mid-screen statement). A "title card at start" = add_text with textPreset title at start 0. add_text always needs text: use the user's words, or write a short (2-6 word) line that fits what is said at that moment — never placeholder text.
 - update_text {clipIds, text?, color?, size?, font?, y?, animIn?, animOut?}
 - delete_clips {clipIds}
-- set_captions {enabled?, captionStyle?, y?, size?}: captionStyle bold|karaoke|minimal|boxed.
+- set_captions {enabled?, captionStyle?, y?, size?}: captionStyle bold|karaoke|minimal|boxed (kinetic|calm|editorial are the looks' captions:
+  prefer set_looks for those).
 - set_music {volume?, duck?, duckLevel?}
 - move_clip {clipIds:[id], start}; trim_clip {clipIds:[id], start?, end?}; split {time, clipIds?}; remove_range {start, end}.
+- zoom {scale, clipIds | start+end, x?, y?}: punch-in (scale 1-1.5 of the clip's framing; 1 = back to normal), capped at the clip's
+  maxZoom (its source resolution). With start/end (timeline seconds) ReelSmith splits the video at both ends and zooms the part
+  in between, so you don't need clip ids. "Punchy zooms" on a talking head = zoom 1.1-1.15 over a phrase with an emphasis word.
+- add_fx {fx: punch|shake|flash, time, strength?, duration?}: a quick effect on the whole picture at a moment (punch = zoom bump,
+  strength 0.05-0.15; shake 0.01-0.03; flash 0.3-0.8). Use on emphasis words or beats, not continuously. clear_fx {start?, end?, fx?} removes them.
+- set_looks {look, default?, phrase?, start?, end?, clear?}: the look presets. look: bold (kinetic lowercase words around the speaker, big
+  words behind the head, punch word yellow) | cool_girl (warm grade, calm lowercase text, one yellow serif italic punch line with sparkles,
+  the user's reels orbiting) | cool_dude (dark editorial grade, tiny spaced capitals + big serif words, wide/close-up crops) | none.
+  default: true = the project's look outside sections; phrase = a section for every sentence that says it ("cool girl when I say X");
+  start/end = a section by time; clear: true = all looks off. Several ops for "cool girl when I say X, bold everywhere else".
 Rules: refer only to clip ids that exist. "Scene N" means visual clips whose scene == N. Use keywords/name/said to find clips
 ("city clips" = visual clips whose keywords or name mention city/urban/street/buildings). Prefer the fewest ops that do exactly what was asked, and only include the fields an op uses.
 If the request is impossible, return no ops and explain in summary. summary is one short sentence describing the change.`;

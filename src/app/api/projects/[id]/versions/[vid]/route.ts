@@ -20,12 +20,16 @@ export const GET = route(async (_req: Request, ctx: Ctx<P>) => {
   return { version };
 });
 
-const action = z.object({ action: z.enum(["duplicate", "rename"]), name: z.string().trim().max(80).optional() });
+const action = z.object({ action: z.enum(["duplicate", "rename", "notes"]), name: z.string().trim().max(80).optional(), notes: z.string().max(4000).optional() });
 
 export const POST = route(async (req: Request, ctx: Ctx<P>) => {
   const { userId, project, version } = await load(ctx);
   const parsed = action.safeParse(await req.json().catch(() => null));
   if (!parsed.success) throw new HttpError(400, "Unknown action");
+  if (parsed.data.action === "notes") {
+    await prisma.timelineVersion.update({ where: { id: version.id }, data: { notes: (parsed.data.notes ?? "").trim() || null } });
+    return { ok: true };
+  }
   if (parsed.data.action === "rename") {
     if (!parsed.data.name) throw new HttpError(400, "Name required");
     await prisma.timelineVersion.update({ where: { id: version.id }, data: { name: parsed.data.name } });

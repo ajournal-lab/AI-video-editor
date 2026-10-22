@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { X } from "lucide-react";
 import { toast } from "sonner";
 import { findClip } from "@/lib/timeline/derive";
@@ -8,6 +9,7 @@ import { MediaLibrary } from "@/components/media/MediaLibrary";
 import { Button } from "@/components/ui/button";
 import { useEditor } from "../store";
 import { addPayload, dragProps, replaceClipMedia } from "../dnd";
+import { VideoClipper } from "./VideoClipper";
 
 function replaceWith(asset: AssetDTO) {
   const s = useEditor.getState();
@@ -34,6 +36,7 @@ export function MediaPanel() {
       .catch((e) => toast.error(e.message));
   };
   const add = (a: AssetDTO) => addPayload({ kind: "asset", asset: a }, null, useEditor.getState().playhead).catch((e) => toast.error(e.message));
+  const [clipping, setClipping] = useState<AssetDTO | null>(null);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -53,6 +56,7 @@ export function MediaPanel() {
           assets={assets}
           setAssets={setAssets}
           onAdd={replaceTarget ? undefined : add}
+          onClip={replaceTarget ? undefined : setClipping}
           highlight={replaceTarget ?? undefined}
           onUploaded={onUploaded}
           itemProps={(a) =>
@@ -60,6 +64,7 @@ export function MediaPanel() {
           }
         />
       </div>
+      {clipping && <VideoClipper key={clipping.id} asset={clipping} open onOpenChange={(v) => !v && setClipping(null)} />}
     </div>
   );
 }

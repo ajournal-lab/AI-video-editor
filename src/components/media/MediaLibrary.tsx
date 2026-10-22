@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Film, ImageIcon, Loader2, Music, Mic, Plus, Search, Tag, Trash2, Upload } from "lucide-react";
+import { Film, ImageIcon, Loader2, Music, Mic, Plus, Scissors, Search, Tag, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/client/api";
 import { uploadAsset, type AssetDTO } from "@/lib/client/upload";
+import { LinkImport } from "./LinkImport";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -45,6 +46,7 @@ export function MediaLibrary({
   assets,
   setAssets,
   onAdd,
+  onClip,
   itemProps,
   compact,
   highlight,
@@ -53,6 +55,7 @@ export function MediaLibrary({
   assets: AssetDTO[] | null;
   setAssets: (fn: (a: AssetDTO[] | null) => AssetDTO[] | null) => void;
   onAdd?: (a: AssetDTO) => void;
+  onClip?: (a: AssetDTO) => void; // videos: open the in/out picker
   itemProps?: (a: AssetDTO) => Record<string, unknown>;
   compact?: boolean;
   highlight?: string;
@@ -83,9 +86,7 @@ export function MediaLibrary({
         setUploads((u) => [...u, { id, name: file.name, p: 0 }]);
         try {
           const asset = await uploadAsset(file, as, (p) => setUploads((u) => u.map((x) => (x.id === id ? { ...x, p } : x))));
-          setAssets((a) => [asset, ...(a ?? [])]);
-          if (onUploaded) onUploaded(asset);
-          else toast.success(`${file.name} added${asset.tags.length ? ` · tagged ${asset.tags.slice(0, 3).join(", ")}` : ""}`);
+          added(asset, file.name);
         } catch (e) {
           toast.error(`${file.name}: ${(e as Error).message}`);
         } finally {
@@ -93,6 +94,14 @@ export function MediaLibrary({
         }
       }),
     );
+  };
+
+  /** A new upload / import (or the existing asset it duplicates) goes to the top of the list, never twice. */
+  const added = (asset: AssetDTO, label: string) => {
+    setAssets((a) => [asset, ...(a ?? []).filter((x) => x.id !== asset.id)]);
+    if (asset.duplicate) toast.info(`${label}: already in your library as “${asset.name}”, not uploaded again`);
+    if (onUploaded) onUploaded(asset);
+    else if (!asset.duplicate) toast.success(`${label} added${asset.tags.length ? ` · tagged ${asset.tags.slice(0, 3).join(", ")}` : ""}`);
   };
 
   const remove = async (a: AssetDTO) => {
@@ -135,6 +144,7 @@ export function MediaLibrary({
         <input ref={fileRef} type="file" multiple accept="video/*,image/*,audio/*" className="hidden" onChange={(e) => (upload(e.target.files, "auto"), (e.target.value = ""))} />
         <input ref={musicRef} type="file" multiple accept="audio/*" className="hidden" onChange={(e) => (upload(e.target.files, "music"), (e.target.value = ""))} />
       </div>
+      <LinkImport onImported={(a) => onUploaded ? (setAssets((l) => [a, ...(l ?? []).filter((x) => x.id !== a.id)]), onUploaded(a)) : setAssets((l) => [a, ...(l ?? []).filter((x) => x.id !== a.id)])} />
       <div className="relative">
         <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search names and tags" className="h-8 pl-8 text-xs" />
@@ -210,6 +220,21 @@ export function MediaLibrary({
                 </Popover>
               </div>
               {a.tags.length > 0 && !compact && <div className="truncate px-1.5 pb-1.5 text-[10px] text-muted-foreground">{a.tags.slice(0, 4).join(" · ")}</div>}
+              {onClip && a.type === "video" && (
+                <Button
+                  size="icon"
+                  variant="secondary"
+                  className="absolute top-1 right-8 size-6 opacity-0 shadow group-hover:opacity-100"
+                  aria-label="Pick in and out points"
+                  title="Clip: pick in/out points (several segments)"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onClip(a);
+                  }}
+                >
+                  <Scissors />
+                </Button>
+              )}
               {onAdd && (
                 <Button
                   size="icon"

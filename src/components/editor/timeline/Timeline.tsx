@@ -37,6 +37,7 @@ import { useEditor } from "../store";
 import { formatTime } from "../format";
 import { cachedCaptionLines } from "../preview/draw";
 import { loadPeaks } from "./peaks";
+import { LooksLane } from "./LooksLane";
 import { DRAG_MIME, uploadAndAdd, useDropHandler, type DragPayload } from "../dnd";
 import { copyScenePrompt, dropImageAt, dropImageOnScene, droppedImages, hasDroppableImage } from "../quickimport";
 
@@ -109,6 +110,7 @@ export function Timeline() {
             <div className="sticky left-0 z-10 shrink-0 border-r border-b bg-zinc-950" style={{ width: HEADER_W }} />
             <Ruler width={contentW} zoom={zoom} />
           </div>
+          <LooksLane zoom={zoom} headerW={HEADER_W} />
           {timeline.tracks.map((track) => (
             <TrackRow key={track.id} track={track} zoom={zoom} selected={selected} onDrop={onDrop} timeline={timeline} />
           ))}
@@ -676,7 +678,7 @@ function AudioBody({ clip, width, zoom }: { clip: AudioClip; width: number; zoom
       <canvas ref={canvasRef} className="absolute inset-x-0 top-3 bottom-0 h-[calc(100%-12px)] w-full" />
       <div className="absolute inset-x-0 top-0 truncate px-2 text-[10px] leading-4 text-emerald-100">
         {clip.name}
-        {clip.duck ? " · ducked" : ""}
+        {clip.sfx ? " · SFX" : clip.duck ? " · ducked" : ""}
         {clip.muted ? " · muted" : ""}
       </div>
       {kf && (

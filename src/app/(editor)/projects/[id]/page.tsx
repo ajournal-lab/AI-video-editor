@@ -9,7 +9,7 @@ import { AgentBanner } from "@/components/site/AgentBanner";
 import { PlanScreen } from "@/components/plan/PlanScreen";
 
 const PLAN_MODES = ["music", "talking_head", "best_take", "voiceover_broll", "auto_clip"];
-const PLAN_STATUSES = ["planning", "review", "plan_failed"];
+const PLAN_STATUSES = ["draft", "planning", "review", "plan_failed"]; // draft = started in the chat, nothing planned yet
 
 export const metadata = { title: "Editor · ReelSmith" };
 

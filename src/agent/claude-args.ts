@@ -1,6 +1,6 @@
 // Command line + system prompt for one headless claude run.
-import { readFileSync } from "node:fs";
-import { fwd, rulesPath, studioDir, styleDir } from "./config";
+import { checklistPath, fwd, gotchasPath, studioDir, styleDir } from "./config";
+import { checklistForPrompt, readGotchasFile } from "./rulesfile";
 
 /** Permission rule path for Write/Edit: "//c/Users/..." (POSIX form of an absolute Windows path). */
 function rulePath(p: string) {
@@ -39,15 +39,11 @@ export function allowedTools(projectDir: string): string[] {
   ];
 }
 
-export function systemPrompt(opts: { projectDir: string; outputFile?: string | null; extraDirs: string[] }) {
+export function systemPrompt(opts: { projectDir: string; outputFile?: string | null; extraDirs: string[]; jobId?: string }) {
   const proj = fwd(opts.projectDir);
   const studio = fwd(studioDir());
-  let rules = "";
-  try {
-    rules = readFileSync(rulesPath(), "utf8");
-  } catch {
-    rules = "(rules.md not found)";
-  }
+  const gotchas = readGotchasFile() || "(gotchas.md not found)";
+  const gotchaFile = `${proj}/jobs/${opts.jobId ?? "job"}.gotchas.json`;
   return `# ReelSmith headless run
 You are running headlessly inside ReelSmith, a local reel editor, through \`claude -p\`. Nobody can answer questions
 or approve anything during this run: never ask. Make sensible choices, note assumptions in the output file, and finish.
@@ -70,8 +66,21 @@ ${opts.outputFile ? `\n## Output\nWrite your result to exactly ${proj}/${opts.ou
   (never video-use's transcribe.py / transcribe_batch.py, which call ElevenLabs).
 - Your Claude subscription has usage limits: look at contact sheets / sampled frames, not every frame.
 
-## rules.md (always apply)
-${rules}`;
+## Before every edit: the taste checklist and the gotchas (both below, re-read on every turn)
+- ${fwd(checklistPath())}: every active rule an edit is held to, with the user's own words. Apply each rule's intent even when
+  its wording is loose. Never edit or delete a rule yourself: ReelSmith files new rules from the user's notes.
+- ${fwd(gotchasPath())}: every technical problem already hit and how it was fixed. Check it before you debug anything.
+- Fix the cause, not just the moment the user named: then check the whole video for the same problem and fix it too (R4).
+- When something breaks during this run and you fix it (a command fails, a tool errors, a file is invalid, a workaround was
+  needed), write it down BEFORE moving on: append to ${gotchaFile} a JSON array of
+  {"title": "short problem", "problem": "what failed (the error)", "why": "the cause", "fix": "what fixed it", "area": "render|import|agent|setup|editor|audio|quality|other"}.
+  ReelSmith adds them to gotchas.md. A problem already in gotchas.md: use its fix; file it again only if the fix changed.
+
+# taste-checklist.md
+${checklistForPrompt()}
+
+# gotchas.md
+${gotchas}`;
 }
 
 export function claudeArgs(opts: {
@@ -96,7 +105,7 @@ export function claudeArgs(opts: {
     // no claude.ai connectors / MCP servers in headless runs
     "--strict-mcp-config",
     "--system-prompt-snapshot",
-    "off", // re-read rules.md on every resumed turn
+    "off", // re-read the checklist and gotchas on every resumed turn
     "--append-system-prompt-file",
     opts.systemPromptFile,
     "--add-dir",

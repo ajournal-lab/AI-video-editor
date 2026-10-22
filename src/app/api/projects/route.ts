@@ -3,6 +3,7 @@ import { prisma } from "@/server/db";
 import { HttpError, requireUserId, route } from "@/server/http";
 import { createLinkAsset } from "@/server/audiolink";
 import { MODES, startPlan, validateInputs, type ModeInputs } from "@/server/modes";
+import { normHandle, readCreatorStyle } from "@/server/style";
 
 export const maxDuration = 600; // a pasted sound link is downloaded before the plan starts
 
@@ -11,9 +12,9 @@ export const GET = route(async () => {
   const projects = await prisma.project.findMany({
     where: { userId },
     orderBy: { updatedAt: "desc" },
-    select: { id: true, title: true, aspect: true, status: true, thumbnailUrl: true, duration: true, updatedAt: true, isSample: true },
+    select: { id: true, title: true, aspect: true, status: true, thumbnailUrl: true, duration: true, updatedAt: true, isSample: true, pipeline: true },
   });
-  return { projects };
+  return { projects: projects.map(({ pipeline, ...p }) => ({ ...p, creator: (pipeline as { creator?: string | null } | null)?.creator ?? null })) };
 });
 
 const body = z.object({
@@ -32,11 +33,14 @@ const body = z.object({
       minSec: z.number().min(5).max(180).optional(),
       maxSec: z.number().min(5).max(180).optional(),
       grade: z.object({ look: z.enum(["cinematic_warm"]), intensity: z.number().min(0).max(1) }).optional(),
+      creator: z.string().max(61).nullish(), // a creator profile: its style.json guides the plan and the stage-2 style pass
     })
     .optional(),
   prompt: z.string().trim().max(6000).optional(),
   visualMode: z.enum(["auto", "ai", "stock"]).default("auto"),
   assetIds: z.array(z.string()).max(100).default([]),
+  // edit modes: open the project on its chat instead of planning right away (the first message starts the cut)
+  startInChat: z.boolean().optional(),
 });
 
 export const POST = route(async (req: Request) => {
@@ -55,10 +59,24 @@ export const POST = route(async (req: Request) => {
     const ids = [...new Set(Object.values(inputs.assets).flat())];
     const owned = await prisma.mediaAsset.count({ where: { id: { in: ids }, userId } });
     if (owned !== ids.length) throw new HttpError(400, "Some inputs are not in your library");
+    const draft = Boolean(parsed.data.startInChat);
+    const creator = inputs.creator ? normHandle(inputs.creator) : null;
+    if (creator && !readCreatorStyle(creator)) throw new HttpError(400, `@${creator} has no finished style profile yet`);
+    inputs.creator = creator;
     const project = await prisma.project.create({
-      data: { userId, title: parsed.data.title || "Untitled video", aspect: parsed.data.aspect, mode, inputs, assetIds: ids, status: "planning" },
+      data: {
+        userId,
+        title: parsed.data.title || "Untitled video",
+        aspect: parsed.data.aspect,
+        mode,
+        inputs,
+        assetIds: ids,
+        status: draft ? "draft" : "planning",
+        // two-stage approval: stage 1 is the spoken cut; with a creator, the style pass runs once the cut is approved
+        pipeline: { stage: "cut", creator, pendingStyle: Boolean(creator), brief: "" },
+      },
     });
-    await startPlan(project);
+    if (!draft) await startPlan(project);
     return { project: { id: project.id } };
   }
   const project = await prisma.project.create({

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Download, ExternalLink, Loader2, Music2, Trash2, Upload } from "lucide-react";
+import { AlertTriangle, BookmarkPlus, CheckCircle2, Download, ExternalLink, Images, Loader2, Lock, Music2, Smartphone, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/client/api";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,10 @@ import { QualityReport, type QualityReportData } from "./QualityReport";
 import { cn } from "@/lib/utils";
 import { useEditor } from "./store";
 import { saveNow } from "./hooks";
+import { RenderNotesDialog } from "./RenderNotesDialog";
+import { RulesAdded } from "./RulesAdded";
+import { CloudRender } from "./CloudRender";
+import { useChat } from "@/components/chat/store";
 
 export interface RenderRow {
   id: string;
@@ -23,12 +27,14 @@ export interface RenderRow {
   progress: number;
   quality: string;
   outputUrl: string | null;
+  previewUrl?: string | null;
+  step?: string | null;
   thumbUrl: string | null;
   error: string | null;
   duration: number | null;
   createdAt: string;
   finishedAt: string | null;
-  version: { id: string; name: string };
+  version: { id: string; name: string; number?: number | null; notes?: string | null };
   report?: RenderReport | null;
 }
 
@@ -43,6 +49,37 @@ export interface RenderReport {
     fixed: boolean;
     pass: boolean;
   };
+  audioSafety?: AudioSafetyReport;
+}
+
+export interface AudioSafetyReport {
+  headroomDb: number;
+  voice: number | null;
+  sfx: { id: string; name: string; start: number; end: number; level: number | null; limit: number; overDb: number; gainDb: number }[];
+  pass: boolean;
+  fixed: boolean;
+  note: string | null;
+}
+
+/** Sound effects vs the voice (worker/audio_safety.py): every SFX at least headroom dB under the voice. */
+export function SfxCheck({ report }: { report?: AudioSafetyReport | null }) {
+  if (!report || !report.sfx.length) return null;
+  const loud = report.sfx.filter((s) => s.overDb > 0);
+  return (
+    <div className={cn("text-[11px]", loud.length ? "text-amber-300" : "text-emerald-400")}>
+      <div className="flex items-center gap-1">
+        {loud.length ? <AlertTriangle className="size-3" /> : <CheckCircle2 className="size-3" />}
+        {loud.length
+          ? `${loud.length} sound effect${loud.length > 1 ? "s" : ""} louder than voice − ${report.headroomDb} dB${report.fixed ? " · turned down in this export" : ""}`
+          : report.note ?? `Sound effects ≥ ${report.headroomDb} dB under the voice`}
+      </div>
+      {loud.map((s) => (
+        <div key={s.id} className="pl-4">
+          {s.name} at {s.start.toFixed(1)}s: {s.level?.toFixed(1)} LUFS vs limit {s.limit.toFixed(1)} (+{s.overDb.toFixed(1)} dB)
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /** Music on the timeline that came from a pasted link: what to pick in Instagram, and whether it's cleared. */
@@ -98,10 +135,11 @@ function AudioCheck({ report }: { report?: RenderReport | null }) {
   );
 }
 
-export function RenderList({ projectId, renders, onChange }: { projectId: string; renders: RenderRow[]; onChange: (r: RenderRow[]) => void }) {
+export function RenderList({ projectId, renders, onChange, onTasteRule }: { projectId: string; renders: RenderRow[]; onChange: (r: RenderRow[]) => void; onTasteRule?: (render: RenderRow) => void }) {
   const latest = useRef(renders);
   latest.current = renders;
   const [ahead, setAhead] = useState<Record<string, number>>({});
+  const [watch, setWatch] = useState<string | null>(null);
 
   // Poll active renders.
   const active = renders.filter((r) => r.status === "queued" || r.status === "processing").map((r) => r.id).join(",");
@@ -136,7 +174,7 @@ export function RenderList({ projectId, renders, onChange }: { projectId: string
   return (
     <div className="space-y-2">
       {renders.map((r) => (
-        <div key={r.id} className="flex gap-3 rounded-lg border p-2">
+        <div key={r.id} className="flex flex-wrap gap-3 rounded-lg border p-2">
           <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded bg-black">
             {r.thumbUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
@@ -161,7 +199,13 @@ export function RenderList({ projectId, renders, onChange }: { projectId: string
                   {new Date(r.finishedAt ?? r.createdAt).toLocaleString()}
                 </div>
                 <AudioCheck report={r.report} />
+                <SfxCheck report={r.report?.audioSafety} />
                 <QualityReport q={r.report?.quality} />
+                {onTasteRule && (
+                  <button type="button" onClick={() => onTasteRule(r)} className="inline-flex items-center gap-1 text-[11px] text-violet-300 hover:text-violet-200">
+                    <BookmarkPlus className="size-3" /> Notes on this render
+                  </button>
+                )}
               </>
             ) : r.status === "failed" ? (
               <div className="line-clamp-2 text-[11px] text-destructive" title={r.error ?? ""}>
@@ -173,12 +217,22 @@ export function RenderList({ projectId, renders, onChange }: { projectId: string
                   <div className={cn("h-full bg-primary transition-all", r.status === "queued" && "animate-pulse")} style={{ width: `${Math.max(3, r.progress * 100)}%` }} />
                 </div>
                 <div className="text-[11px] text-muted-foreground">
-                  {r.status === "queued" ? (ahead[r.id] ? `Queued · ${ahead[r.id]} ahead` : "Queued · waiting for the render worker") : `Rendering ${Math.round(r.progress * 100)}%`}
+                  {r.status === "queued" ? (ahead[r.id] ? `Queued · ${ahead[r.id]} ahead` : "Queued · waiting for the render worker") : r.step ?? `Rendering ${Math.round(r.progress * 100)}%`}
                 </div>
+                {r.previewUrl && (
+                  <button type="button" className="inline-flex items-center gap-1 text-[11px] text-violet-300 hover:text-violet-200" onClick={() => setWatch(watch === r.id ? null : r.id)}>
+                    <Smartphone className="size-3" /> Phone preview ready (quality check still running)
+                  </button>
+                )}
               </>
             )}
           </div>
           <div className="flex flex-col gap-1">
+            {r.previewUrl && (
+              <Button size="sm" variant="secondary" onClick={() => setWatch(watch === r.id ? null : r.id)} title="Quick 720p preview">
+                <Smartphone /> {watch === r.id ? "Hide" : "Preview"}
+              </Button>
+            )}
             {r.status === "done" && r.outputUrl && (
               <Button size="sm" asChild>
                 <a href={r.outputUrl} download={`reelsmith-${projectId}-${r.id}.mp4`} target="_blank" rel="noreferrer">
@@ -192,6 +246,7 @@ export function RenderList({ projectId, renders, onChange }: { projectId: string
               </Button>
             )}
           </div>
+          {watch === r.id && r.previewUrl && <video src={r.previewUrl} controls autoPlay playsInline className="mx-auto max-h-[55vh] basis-full rounded bg-black" />}
         </div>
       ))}
     </div>
@@ -208,6 +263,21 @@ export function ExportDialog() {
   const timeline = useEditor((s) => s.timeline);
   const assets = useEditor((s) => s.assets);
   const uncleared = linkMusic(timeline, assets).filter((m) => m.active && !m.rights);
+  const [ruleFor, setRuleFor] = useState<RenderRow | null>(null);
+  // two-stage approval: projects that went through the style pass render only after their stills are approved
+  const pipeline = useChat((s) => s.state?.pipeline);
+  const [gate, setGate] = useState<{ ok: boolean; reason?: string; changed: boolean } | null>(null);
+  useEffect(() => {
+    if (!open || !pipeline) return setGate(null);
+    api<{ ok: boolean; reason?: string; changed: boolean }>(`/api/projects/${projectId}/pipeline`, { method: "POST", json: { action: "gate", json: useEditor.getState().timeline } })
+      .then(setGate)
+      .catch(() => setGate(null));
+  }, [open, projectId, pipeline, timeline]);
+  const blocked = gate ? !gate.ok : false;
+  const reviewStills = () => {
+    setOpen(false);
+    useEditor.getState().setPanel("chat");
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -264,9 +334,26 @@ export function ExportDialog() {
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> This export includes link-sourced audio marked timing only / personal use. Mute that clip to export without it, or tick “I have the rights” in the Music panel.
           </p>
         )}
-        <Button onClick={() => render()} disabled={busy}>
-          {busy ? <Loader2 className="animate-spin" /> : <Upload />} Render {quality}
+        {blocked && (
+          <div className="flex items-start gap-2 rounded-lg border border-violet-400/50 bg-violet-500/5 p-2.5 text-xs">
+            <Lock className="mt-0.5 size-3.5 shrink-0 text-violet-300" />
+            <div className="flex-1 space-y-1.5">
+              <p>{gate?.reason}</p>
+              <Button size="sm" variant="secondary" className="h-7 text-xs" onClick={reviewStills}>
+                <Images /> Review the stills
+              </Button>
+            </div>
+          </div>
+        )}
+        {gate?.ok && gate.changed && (
+          <p className="flex items-start gap-1.5 text-xs text-amber-300">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" /> The timeline changed after you approved the stills. Render anyway, or re-render the stills from the chat panel first.
+          </p>
+        )}
+        <Button onClick={() => render()} disabled={busy || blocked}>
+          {busy ? <Loader2 className="animate-spin" /> : blocked ? <Lock /> : <Upload />} Render {quality}
         </Button>
+        <CloudRender projectId={projectId} quality={quality} blocked={blocked} onRendered={(r) => setRenders((x) => [r, ...(x ?? []).filter((y) => y.id !== r.id)])} />
         <AlertDialog open={confirm} onOpenChange={setConfirm}>
           <AlertDialogContent>
             <AlertDialogHeader>
@@ -295,9 +382,13 @@ export function ExportDialog() {
               <Loader2 className="animate-spin text-muted-foreground" />
             </div>
           ) : (
-            <RenderList projectId={projectId} renders={renders} onChange={setRenders} />
+            <>
+              <RenderList projectId={projectId} renders={renders} onChange={setRenders} onTasteRule={setRuleFor} />
+              {renders.some((r) => r.status === "done") && <RulesAdded projectId={projectId} />}
+            </>
           )}
         </div>
+        <RenderNotesDialog projectId={projectId} version={ruleFor?.version?.name ?? null} open={Boolean(ruleFor)} onOpenChange={(v) => !v && setRuleFor(null)} />
       </DialogContent>
     </Dialog>
   );

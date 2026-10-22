@@ -10,11 +10,15 @@ preview does (round(t * fps)).
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
+import threading
+import time
 from pathlib import Path
 
+import audio_safety
 import color
 import enhance
 import grade
@@ -22,11 +26,11 @@ from ass import build_ass
 from audio_master import master as master_audio
 from quality import render_check as quality_check
 from media import ffmpeg_bin, filter_script_args, probe
-from timeline import (DUCK_RAMP, adjacent_prev, clip_end, color_ops, fx_exprs, fx_groups, ken_burns_exprs,
+from timeline import (DUCK_RAMP, adjacent_prev, clip_ducks, clip_end, color_ops, fx_exprs, fx_groups, ken_burns_exprs,
                       placement, source_out, speech_intervals, timeline_duration)
 
 XFADE = {"crossfade": "fade", "slide": "slideleft", "zoom": "zoomin", "flash": "fadewhite"}
-QUALITY = {"720p": 720, "1080p": 1080}
+QUALITY = {"540p": 540, "720p": 720, "1080p": 1080}  # 540p: stills previews (worker/stills.py)
 
 
 def output_size(tl, quality: str):
@@ -124,7 +128,7 @@ def _visual_clip(g: Graph, clip, ctx) -> str:
         c0, c1 = (clip.get("colors") or ["#111827", "#6d28d9"])[:2]
         src = g.label("c")
         g.add(f"gradients=s={cw}x{ch}:c0={_ffcolor(c0)}:c1={_ffcolor(c1)}:x0=0:y0=0:x1={cw}:y1={ch}"
-              f":nb_colors=2:speed=0:r={fps}:d={_num(dur + 1 / fps)}," + "".join(x + "," for x in _color_filters(clip))
+              f":nb_colors=2:speed=0:seed=1:r={fps}:d={_num(dur + 1 / fps)}," + "".join(x + "," for x in _color_filters(clip))
               + f"scale=out_color_matrix=bt709:out_range=tv,format=yuva420p,{color.TAG_709}[{src}]")
         stream = f"[{src}]"
     else:
@@ -140,7 +144,8 @@ def _visual_clip(g: Graph, clip, ctx) -> str:
             # Enhance: read the Real-ESRGAN intermediate instead when upscale is on
             path, t_in = enhance.upscaled_source(enh, path, float(clip["in"]), ctx["resolve"])
             t_len = dur * clip["speed"] + 0.5
-            k = g.input(["-ss", _num(t_in), "-t", _num(t_len), "-i", path])
+            dec = ["-c:v", "libvpx-vp9"] if color.probe_color(path).get("vp9_alpha") else []  # keep the alpha
+            k = g.input(["-ss", _num(t_in), "-t", _num(t_len), *dec, "-i", path])
             info = ctx["probe"](path)
             if info["has_audio"] and not clip.get("muted") and clip.get("volume", 1) > 0 and not ctx["track_muted"]:
                 ctx["video_audio"].append((k, clip))
@@ -260,7 +265,9 @@ def _gap(g: Graph, n: int, ctx) -> str:
 
 
 def _video_track(g: Graph, track, ctx):
-    clips = sorted((c for c in track["clips"] if c["duration"] > 0.01), key=lambda c: c["start"])
+    # a Cut-out copy (looks) is only the speaker: without its matte it would cover the frame, so it is skipped
+    clips = sorted((c for c in track["clips"] if c["duration"] > 0.01 and (c.get("src") or c["type"] == "color")
+                    and not (c.get("cutout") and not (c.get("matte") or {}).get("on"))), key=lambda c: c["start"])
     fps = ctx["fps"]
     acc = None
     acc_frames = 0
@@ -302,8 +309,10 @@ def _video_track(g: Graph, track, ctx):
     return acc
 
 
-def _gain_expr(clip, tl, intervals) -> str:
+def _gain_expr(clip, tl, intervals, ducks=False, extra=1.0) -> str:
     parts = [_num(float(clip.get("volume", 1)))]
+    if abs(extra - 1) > 1e-4:
+        parts.append(_num(float(extra)))  # audio safety: a sound effect turned down under the voice
     kfs = sorted(clip.get("keyframes") or [], key=lambda k: k["t"])
     if kfs:
         u = f"(t-{_num(float(clip['start']))})"
@@ -315,7 +324,7 @@ def _gain_expr(clip, tl, intervals) -> str:
             expr = f"if(lt({u},{_num(float(b['t']))}),{seg},{expr})"
         expr = f"if(lt({u},{_num(float(kfs[0]['t']))}),{_num(float(kfs[0]['gain']))},{expr})"
         parts.append(f"({expr})")
-    if clip.get("duck") and intervals:
+    if ducks and intervals:
         r = DUCK_RAMP
         terms = "+".join(
             f"clip(min((t-{_num(a - r)})/{r},({_num(b + r)}-t)/{r}),0,1)" for a, b in intervals)
@@ -323,7 +332,7 @@ def _gain_expr(clip, tl, intervals) -> str:
     return "*".join(parts)
 
 
-def _audio_chain(clip, label_in: str, tl, intervals, T, src_is_trimmed=False) -> str:
+def _audio_chain(clip, label_in: str, tl, intervals, T, src_is_trimmed=False, ducks=False, extra=1.0) -> str:
     chain = []
     if not src_is_trimmed:
         chain.append(f"atrim=start={_num(float(clip['in']))}:end={_num(source_out(clip))}")
@@ -336,7 +345,7 @@ def _audio_chain(clip, label_in: str, tl, intervals, T, src_is_trimmed=False) ->
     delay = int(round(clip["start"] * 1000))
     if delay > 0:
         chain.append(f"adelay={delay}:all=1")
-    chain.append(f"volume='{_gain_expr(clip, tl, intervals)}':eval=frame")
+    chain.append(f"volume='{_gain_expr(clip, tl, intervals, ducks, extra)}':eval=frame")
     fi, fo = float(clip.get("fadeIn") or 0), float(clip.get("fadeOut") or 0)
     if fi > 0:
         chain.append(f"afade=t=in:st={_num(float(clip['start']))}:d={_num(fi)}")
@@ -345,7 +354,23 @@ def _audio_chain(clip, label_in: str, tl, intervals, T, src_is_trimmed=False) ->
     return f"[{label_in}]" + ",".join(chain)
 
 
-def build(tl, quality: str, resolve, workdir: Path):
+def insert_clips(tl):
+    return [c for t in tl["tracks"] if t["kind"] == "video" for c in t["clips"] if c.get("insert")]
+
+
+def split_index(tl) -> int:
+    """Bottom-up index of the lowest visible video track holding an insert (0 = nothing to render before them)."""
+    layers = [t for t in reversed(tl["tracks"]) if not t.get("hidden") and (t["kind"] == "video" or (t["kind"] == "text" and t.get("behind")))]
+    for i, t in enumerate(layers):
+        if t["kind"] == "video" and any(c.get("insert") for c in t["clips"]):
+            return i
+    return 0
+
+
+def build(tl, quality: str, resolve, workdir: Path, stage=None, split=0, under: Path | None = None, sfx_gain=None):
+    """ffmpeg args for the edit. stage=None: everything in one pass. With inserts, stage="under" renders the layers
+    below the lowest insert track (lossless under.mkv, video only) while the inserts build, then stage="over" puts
+    the rest (inserts, cut-out, text, captions, effects) on top of it and mixes all the audio."""
     fps = int(tl.get("fps", 30))
     Wo, Ho = output_size(tl, quality)
     T = max(0.5, timeline_duration(tl))
@@ -363,17 +388,51 @@ def build(tl, quality: str, resolve, workdir: Path):
         "video_audio": [], "track_muted": False, "workdir": workdir, "audio_sources": {}, "sources": [],
     }
     total_frames = round(T * fps)
-    g.add(f"color=c={_ffcolor(tl.get('background', '#000000'))}:s={Wo}x{Ho}:r={fps},"
-          f"trim=end_frame={total_frames},format=yuv420p,setsar=1,{color.TAG_709}[base0]")
+    if stage == "over":
+        k = g.input(["-i", str(under)])
+        g.add(f"[{k}:v]format=yuv420p,setsar=1,trim=end_frame={total_frames},setpts=PTS-STARTPTS,{color.TAG_709}[base0]")
+    else:
+        g.add(f"color=c={_ffcolor(tl.get('background', '#000000'))}:s={Wo}x{Ho}:r={fps},"
+              f"trim=end_frame={total_frames},format=yuv420p,setsar=1,{color.TAG_709}[base0]")
     base = "base0"
-    video_tracks = [t for t in tl["tracks"] if t["kind"] == "video" and not t.get("hidden")]
-    for track in reversed(video_tracks):  # bottom track first
+    # layers bottom-up: video tracks overlay; a "behind" text track is burned in at its place (under the Cut-out)
+    layers = [t for t in reversed(tl["tracks"]) if not t.get("hidden") and (t["kind"] == "video" or (t["kind"] == "text" and t.get("behind")))]
+    if stage == "under":
+        layers = layers[:split]
+    elif stage == "over":
+        below, layers = layers[:split], layers[split:]
+        for track in below:  # their picture is in under.mkv; their clips' sound is mixed here
+            if track["kind"] == "video":
+                _video_track_audio(g, track, ctx)
+    fonts = _escape_path(str(ctx_fonts_dir()))
+    for li, track in enumerate(layers):
+        if track["kind"] == "text":
+            ass_text = build_ass(tl, behind_track=track)
+            if "Dialogue:" in ass_text:
+                name = f"behind{li}.ass"
+                (workdir / name).write_text(ass_text, encoding="utf-8")
+                nb = g.label("base")
+                g.add(f"[{base}]subtitles=filename={name}:fontsdir='{fonts}'[{nb}]")
+                base = nb
+            continue
         stream = _video_track(g, track, ctx)
         if not stream:
             continue
         nb = g.label("base")
         g.add(f"[{base}][{stream}]overlay=eof_action=pass:format=yuv420[{nb}]")  # YUV blend: no RGB round trip
         base = nb
+
+    if stage == "under":
+        g.add(f"[{base}]format=yuv420p,{color.TAG_709}[vout]")
+        script = workdir / "graph_under.txt"
+        script.write_text(";\n".join(g.lines), encoding="utf-8")
+        args = [ffmpeg_bin(), "-y", "-hide_banner", "-nostats", "-loglevel", "error"]
+        for inp in g.inputs:
+            args += inp
+        args += [*filter_script_args("graph_under.txt"), "-progress", "pipe:1", "-map", "[vout]", "-c:v", "libx264",
+                 "-qp", "0", "-preset", "ultrafast", "-pix_fmt", "yuv420p", *color.output_tags(), "-r", str(fps), "-an",
+                 "-t", _num(T), "under.mkv"]
+        return args, T, ctx["audio_sources"], ctx
 
     fx = _beat_fx(tl, fps)
     if fx:
@@ -384,7 +443,6 @@ def build(tl, quality: str, resolve, workdir: Path):
     ass_text = build_ass(tl)
     if "Dialogue:" in ass_text:
         (workdir / "overlay.ass").write_text(ass_text, encoding="utf-8")
-        fonts = _escape_path(str(ctx_fonts_dir()))
         nb = g.label("base")
         g.add(f"[{base}]subtitles=filename=overlay.ass:fontsdir='{fonts}'[{nb}]")
         base = nb
@@ -392,6 +450,7 @@ def build(tl, quality: str, resolve, workdir: Path):
 
     # ---- audio
     intervals = speech_intervals(tl)
+    sfx_gain = sfx_gain or {}
     audio_labels: list[str] = []
     by_src: dict[str, list] = {}
     for track in tl["tracks"]:
@@ -400,18 +459,19 @@ def build(tl, quality: str, resolve, workdir: Path):
         for clip in track["clips"]:
             if clip.get("muted") or clip["duration"] <= 0.01 or not clip.get("src"):
                 continue
-            by_src.setdefault(clip["src"], []).append(clip)
+            by_src.setdefault(clip["src"], []).append((clip, track["kind"]))
     for src, clips in by_src.items():
         k = g.input(["-i", resolve(src)])
-        ctx["audio_sources"][clips[0].get("name") or src] = resolve(src)
+        ctx["audio_sources"][clips[0][0].get("name") or src] = resolve(src)
         splits = [g.label("as") for _ in clips]
         if len(clips) > 1:
             g.add(f"[{k}:a]asplit={len(clips)}" + "".join(f"[{s}]" for s in splits))
         else:
             g.add(f"[{k}:a]anull[{splits[0]}]")
-        for s, clip in zip(splits, clips):
+        for s, (clip, kind) in zip(splits, clips):
             out = g.label("au")
-            g.add(_audio_chain(clip, s, tl, intervals, T) + f"[{out}]")
+            g.add(_audio_chain(clip, s, tl, intervals, T, ducks=kind == "music" and clip_ducks(tl, clip),
+                               extra=sfx_gain.get(clip["id"], 1.0)) + f"[{out}]")
             audio_labels.append(out)
     for k, clip in ctx["video_audio"]:
         ctx["audio_sources"][clip.get("name") or clip["src"]] = resolve(clip["src"])
@@ -437,6 +497,21 @@ def build(tl, quality: str, resolve, workdir: Path):
              *color.output_tags(), "-r", str(fps), "-an", "-t", _num(T), "master.mkv",
              "-map", "[aout]", "-c:a", "pcm_f32le", "-ar", "48000", "-t", _num(T), "mix.wav"]
     return args, T, ctx["audio_sources"], ctx
+
+
+def _video_track_audio(g: Graph, track, ctx):
+    """The sound of a video track rendered in the under pass (its picture is already in under.mkv)."""
+    if track.get("muted"):
+        return
+    for clip in track["clips"]:
+        if clip["type"] != "video" or not clip.get("src") or clip.get("muted") or clip.get("volume", 1) <= 0 or clip.get("cutout"):
+            continue
+        path = ctx["resolve"](clip["src"])
+        if not ctx["probe"](path)["has_audio"]:
+            continue
+        n = ctx["frames"](clip)
+        k = g.input(["-ss", _num(float(clip["in"])), "-t", _num(n / ctx["fps"] * clip["speed"] + 0.5), "-i", path])
+        ctx["video_audio"].append((k, clip))
 
 
 # Export: H.264 High, yuv420p, bt709, CRF 17 preset slow (EXPORT_RC=2pass: two-pass at EXPORT_KBPS).
@@ -476,21 +551,108 @@ def ctx_fonts_dir() -> Path:
     return (Path(__file__).resolve().parent.parent / "public" / "fonts").resolve()
 
 
-def run(tl, quality, resolve, workdir: Path, on_progress):
-    args, T, audio_sources, ctx = build(tl, quality, resolve, workdir)
-    proc = subprocess.Popen(args, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    assert proc.stdout
-    for line in proc.stdout:
-        m = re.match(r"out_time_(?:us|ms)=(\d+)", line.strip())
-        if m:
-            on_progress(min(0.6, 0.6 * int(m.group(1)) / 1e6 / T))
-    err = proc.stderr.read() if proc.stderr else ""
-    if proc.wait() != 0:
+# Phone preview: small and fast to load over Wi-Fi/mobile, separate from the full-quality export.
+PREVIEW = {"short": int(os.environ.get("PREVIEW_SHORT", "720")), "kbps": int(os.environ.get("PREVIEW_KBPS", "1400")),
+           "audio": os.environ.get("PREVIEW_AUDIO", "96k")}
+
+
+def make_preview(src: Path, dst: Path) -> Path:
+    """720p (short side), ~1.4 Mbit/s H.264 + AAC 96k, faststart: for quick review in the app and on a phone."""
+    k = PREVIEW["kbps"]
+    s = PREVIEW["short"]
+    vf = f"scale='if(lt(iw,ih),{s},-2)':'if(lt(iw,ih),-2,{s})':flags=bicubic"
+    cmd = [ffmpeg_bin(), "-y", "-hide_banner", "-loglevel", "error", "-i", str(src), "-map", "0:v:0", "-map", "0:a?",
+           "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "main", "-pix_fmt", "yuv420p",
+           *color.output_tags(), "-b:v", f"{k}k", "-maxrate", f"{int(k * 1.5)}k", "-bufsize", f"{k * 2}k",
+           "-c:a", "aac", "-b:a", PREVIEW["audio"], "-ar", "48000", "-movflags", "+faststart", str(dst)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("preview encode failed: " + r.stderr[-800:])
+    return dst
+
+
+STALL_SECONDS = float(os.environ.get("RENDER_STALL_SECONDS", "180"))
+
+
+def _ffmpeg(args, workdir: Path, T: float, on_progress, p0: float, p1: float, log_name="ffmpeg.log"):
+    """Run one ffmpeg pass: progress from stdout, stderr into a log file (a full stderr pipe can't block it), and a
+    watchdog that kills ffmpeg when its progress hasn't moved for STALL_SECONDS (fails the job instead of hanging)."""
+    log_path = workdir / log_name
+    (workdir / (log_name.rsplit(".", 1)[0] + "-args.json")).write_text(json.dumps(args), encoding="utf-8")  # to re-run by hand
+    # progress goes to a file that is polled (a stdout pipe read line by line stalled some graphs on Windows)
+    prog = workdir / (log_name.rsplit(".", 1)[0] + "-progress.txt")
+    args = [("file:" + str(prog)) if (a == "pipe:1" and i and args[i - 1] == "-progress") else a for i, a in enumerate(args)]
+    last = {"t": time.time(), "v": -1}
+    stalled = False
+    with open(log_path, "w", encoding="utf-8", errors="replace") as log:
+        proc = subprocess.Popen(args, cwd=workdir, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log)
+        while True:
+            code = proc.poll()
+            try:
+                vals = re.findall(r"out_time_(?:us|ms)=(\d+)", prog.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                vals = []
+            if vals:
+                v = int(vals[-1])
+                if v != last["v"]:
+                    last.update(t=time.time(), v=v)
+                on_progress(p0 + (p1 - p0) * min(1.0, v / 1e6 / T))
+            if code is not None:
+                break
+            if time.time() - last["t"] > STALL_SECONDS:
+                stalled = True
+                proc.kill()
+                proc.wait()
+                code = -1
+                break
+            time.sleep(0.5)
+    err = log_path.read_text(encoding="utf-8", errors="replace")
+    if stalled:
+        raise RuntimeError(f"ffmpeg failed: no progress for {int(STALL_SECONDS)} s at {last['v'] / 1e6:.1f}s of {T:.1f}s (stalled; log: {err[-1500:]})")
+    if code != 0:
         raise RuntimeError("ffmpeg failed: " + err[-2000:])
+
+
+def run(tl, quality, resolve, workdir: Path, on_progress, on_preview=None, wait_inserts=None):
+    """wait_inserts(tl, block) fills the insert clips' src from their built files; with block=True it waits for
+    the ones still building (render.py renders what lies under them in the meantime)."""
+    report = {}
+    try:
+        safety = audio_safety.measure(tl, resolve)
+    except Exception as exc:  # measuring must never stop a render
+        safety = {"pass": True, "sfx": [], "note": f"not measured: {str(exc)[:200]}"}
+    gains = audio_safety.gains(safety)
+    if safety.get("sfx"):
+        safety["fixed"] = bool(gains)
+        report["audioSafety"] = safety
+    if wait_inserts and insert_clips(tl):
+        tl = wait_inserts(tl, False)
+    pending = [c for c in insert_clips(tl) if not c.get("src")]
+    if pending:
+        split = split_index(tl)
+        under_ctx = None
+        if split > 0:  # render the layers under the inserts while they build
+            args, T, _, under_ctx = build(tl, quality, resolve, workdir, stage="under", split=split)
+            _ffmpeg(args, workdir, T, on_progress, 0.0, 0.3, "ffmpeg-under.log")
+        tl = wait_inserts(tl, True)
+        args, T, audio_sources, ctx = build(tl, quality, resolve, workdir, stage="over" if split > 0 else None,
+                                            split=split, under=workdir / "under.mkv", sfx_gain=gains)
+        if under_ctx:
+            ctx["sources"] = under_ctx["sources"] + ctx["sources"]
+        _ffmpeg(args, workdir, T, on_progress, 0.3 if split > 0 else 0.0, 0.6)
+    else:
+        args, T, audio_sources, ctx = build(tl, quality, resolve, workdir, sfx_gain=gains)
+        _ffmpeg(args, workdir, T, on_progress, 0.0, 0.6)
     fps = int(tl.get("fps", 30))
     enc = encode_final(workdir / "master.mkv", workdir / "video.mp4", fps, lambda p: on_progress(0.6 + 0.25 * p), T)
     out = workdir / "out.mp4"
-    report = {"audio": master_audio(workdir / "mix.wav", workdir / "video.mp4", out, audio_sources)}
+    report["audio"] = master_audio(workdir / "mix.wav", workdir / "video.mp4", out, audio_sources)
+    on_progress(0.88)
+    if on_preview:
+        try:
+            on_preview(make_preview(out, workdir / "preview.mp4"))  # available before the quality check finishes
+        except Exception as exc:  # the preview is a convenience: never fail the render over it
+            report["previewError"] = str(exc)[:300]
     on_progress(0.9)
     report["quality"] = quality_check(out, workdir / "master.mkv", tl, ctx, enc, T)
     thumb = workdir / "thumb.jpg"

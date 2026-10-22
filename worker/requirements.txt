@@ -11,3 +11,7 @@ yt-dlp>=2025.1.1
 matplotlib>=3.8
 # Static ffmpeg for running the worker outside Docker (Windows/macOS); the Docker image uses apt ffmpeg.
 imageio-ffmpeg>=0.5
+# animated inserts (worker/inserts.py)
+Pillow>=10
+# TikTok (and some other sites) need a browser fingerprint for yt-dlp --impersonate
+curl_cffi>=0.10,<0.15

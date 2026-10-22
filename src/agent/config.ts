@@ -6,11 +6,16 @@ import path from "node:path";
 
 /** Per-user data root (setup.ps1 writes the real paths to .env; these are only fallbacks). */
 const homeDir = () => path.join(os.homedir(), "ReelSmith");
-/** Claude Code workspace with the video-use + edit-reel skills and rules.md. */
+/** Claude Code workspace with the video-use + edit-reel skills, taste-checklist.md and gotchas.md. */
 export const studioDir = () => path.resolve(process.env.REEL_STUDIO_DIR || path.join(homeDir(), "studio"));
-export const rulesPath = () => path.join(studioDir(), "rules.md");
+/** Every rule an edit is held to (replaced rules.md on 2026-10-21). Read before every edit. */
+export const checklistPath = () => path.join(studioDir(), "taste-checklist.md");
+/** Every technical problem hit so far: Problem / Why it happened / Fix. Read before every edit. */
+export const gotchasPath = () => path.join(studioDir(), "gotchas.md");
 /** Reference reels for style profiles. */
 export const styleDir = () => path.resolve(process.env.STYLE_DIR || path.join(homeDir(), "style"));
+/** Creator teardowns: <creatorDir>/<handle>/{teardown.md, style.json, videos/, ...} (readable by every run). */
+export const creatorDir = () => path.resolve(process.env.CREATOR_DIR || path.join(studioDir(), "creator-profiles"));
 
 export const storageDir = () => path.resolve(process.env.STORAGE_DIR || path.join(process.cwd(), "storage"));
 /** Per-project working folder Claude reads and writes: raw/, edit/, jobs/, *.json results. */
@@ -29,7 +34,8 @@ export const workerPython = () => {
   return existsSync(venv) ? venv : pythonBin();
 };
 
-export const PROJECT_SUBDIRS = ["raw", "edit", "edit/scripts", "edit/transcripts", "edit/frames", "edit/verify", "jobs", "render"];
+// rules/ = notes turned into rules by a job (taste checklist R2), checks/ = the fresh checker's reports (R5)
+export const PROJECT_SUBDIRS = ["raw", "edit", "edit/scripts", "edit/transcripts", "edit/frames", "edit/verify", "jobs", "render", "rules", "checks"];
 
 /** Forward slashes: the permission rules only match this form (Bash and file paths). */
 export const fwd = (p: string) => p.replace(/\\/g, "/");
@@ -53,10 +59,14 @@ export function billingWarnings(env: NodeJS.ProcessEnv = process.env): string[] 
   return out;
 }
 
+/** App secrets no claude child (or the tools it runs) ever sees. */
+const SECRET_VARS = ["DATABASE_URL", "AUTH_SECRET", "GITHUB_TOKEN", "GH_TOKEN", "CLOUD_RENDER_TOKEN", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"] as const;
+
 /** Child-process environment for claude: no API credentials, no app secrets. */
 export function claudeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
-  for (const k of [...API_KEY_VARS, ...PROVIDER_VARS, "DATABASE_URL", "AUTH_SECRET"]) delete out[k];
+  // GitHub tokens never reach a claude child
+  for (const k of [...API_KEY_VARS, ...PROVIDER_VARS, ...SECRET_VARS]) delete out[k];
   for (const k of Object.keys(out)) if (k.startsWith("R2_")) delete out[k];
   out.PYTHONIOENCODING = "utf-8"; // the Windows console codepage crashes video-use's helpers on "→"
   out.PYTHONUTF8 = "1";
@@ -83,6 +93,8 @@ export interface RunnerStatus {
   auth: { loggedIn: boolean; authMethod?: string; subscriptionType?: string } | null;
   warnings: string[];
   currentJobId: string | null;
+  /** when Claude reported its usage limit, until it resets (ISO) */
+  claudeLimitedUntil?: string | null;
 }
 
 /** The runner rewrites its status file every few seconds; older than this = offline. */

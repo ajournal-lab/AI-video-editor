@@ -10,6 +10,11 @@ All output goes in `<clip folder>/edit/`. Scripts live next to this file in `scr
 so the project is self-contained). Reference material is in `reference/`.
 
 ## 0. Setup (explain each command before running it)
+- **First, read `{{REEL_STUDIO_DIR}}/taste-checklist.md` and `{{REEL_STUDIO_DIR}}/gotchas.md`.** Every rule there applies to this edit (your
+  words + what they mean in practice); every gotcha is a problem already solved, so check it before debugging anything.
+  R1-R7 are how to work: each note from the user becomes a rule in their words BEFORE you change anything, anything that breaks
+  and gets fixed goes into gotchas.md before moving on, fix the cause across the whole video, a fresh subagent checks every
+  draft, ask when a note contradicts a rule, never delete a rule without asking, list the rules added when the video is done.
 - `ffmpeg`: if missing, run `winget install ffmpeg` (Gyan.FFmpeg). winget's PATH change doesn't reach the running shell and
   the Links shim may not be created, so **`scripts/ff.py` finds ffmpeg under
   `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg*\*\bin`**. Every script imports it. In bash, prepend that bin dir to PATH.
@@ -79,7 +84,7 @@ zoom), plus any cleaned script, and **wait for OK.** Use AskUserQuestion for hor
 - Always tell the user **which second of the song the edit starts from** (the IG start point).
 
 ## 5a. Enhance (every reel, after the plan is approved)
-Defaults and limits: the "Enhance defaults" section of `{{REEL_STUDIO_DIR}}/rules.md`. CPU only.
+Defaults and limits: rule R36 (Enhance) of `{{REEL_STUDIO_DIR}}/taste-checklist.md`. CPU only.
 - Write `edit/enhance/spec.json`: `{"clips": [{"id": "s0", "type": "video", "path": "<abs clip path>", "in": <shot in>,
   "len": <source seconds the shot uses>, "placedWidth": 1080, "name": "..."}]}`, with one entry per planned shot.
 - `python {{REEL_STUDIO_DIR}}/tools/enhance.py analyze --spec edit/enhance/spec.json --out edit/enhance/analysis.json`
@@ -106,7 +111,7 @@ Defaults and limits: the "Enhance defaults" section of `{{REEL_STUDIO_DIR}}/rule
   BGR (`#FFD60A` → `&H000AD6FF&`). Keep text between y=250 and y=1520.
 - Audio outputs (`audio` list): `music` (preview), `bed` (continuous room-tone/ambience from one clip; never the per-shot gym
   audio, which jumps at every cut), `voice` (talking head). Two-pass loudnorm to **-14 LUFS**, TP -1.5.
-- Output: see "Render defaults" in `{{REEL_STUDIO_DIR}}/rules.md`: 1080x1920 at the sources' own frame rate, every shot through
+- Output: see rules R30-R33 (video quality) in `{{REEL_STUDIO_DIR}}/taste-checklist.md`: 1080x1920 at the sources' own frame rate, every shot through
   ReelSmith's `color.py` (iPhone HLG/Dolby Vision tone-mapped to SDR bt709, P3/601/full range converted), one scale,
   lossless shot intermediates, ONE final x264 encode (High, yuv420p, bt709 tags, CRF 17 slow), AAC 192k 48 kHz, `+faststart`.
 
@@ -122,22 +127,23 @@ safe-zone lines (y=250, y=1520). **Look at every sheet** and check:
 - Overlays are on screen ≥1.2s (3 words). The reveal holds long enough. Duration and frame count match the plan.
 - Talking head: re-transcribe the output (`transcribe.py --out work/check final.mp4`). Words must be intact, with no fillers or retakes.
 Fix, re-render, re-review. Only then show the result.
+- **Then a fresh subagent checks the draft (taste checklist R5).** Start a new subagent (Agent tool) that has not seen the edit:
+  give it the checklist path, the EDL/plan, the review sheets and the render, and ask it to check the draft against EVERY active
+  rule and report each finding as rule / where / problem / fix. Fix every failure at its cause (R4), re-render, and tell the
+  user what the checker found and what you fixed, before you show the video.
 
 ## 7. Hand off
 Final video path(s), what the review caught and fixed, 3 alternative hooks in the same sassy motivational tone, and a short IG
 caption with a few relevant hashtags. Include the song start second when music is involved.
+End with the rules added to the taste checklist while making this video (R7).
 
-## Rules from user feedback (append a new rule every time the user gives feedback on an edit)
-1. (2026-10-01) **Horizontal clips:** the user chose *crop to vertical* over a blurred background. Still ask each time, but
-   preselect crop and pick the most readable `cx` from a crop test.
-2. (2026-10-01) **Grade:** the user approved *grey grind → colour reveal* (grind `grey`, reveal untouched natural colour).
-   Offer it as the recommended default.
-3. (2026-10-01) **Music deliverables:** the user adds the sound in Instagram. Export **`final_nomusic.mp4`** (to post; ambience
-   bed) **and `final_preview.mp4`** (with the track, to check sync), also copy nomusic to `final.mp4`, and **state which second
-   of the song the edit starts from.** Sync cuts to the beat and land the reveal on the drop.
-4. (2026-10-01) **Sound shorter than the target length:** the user chose to *fit the reel to the sound* (song from 0:00, reveal on
-   the drop, extend the payoff over the loud section until the sound ends) rather than keep the 30s target. Ask when it happens.
-5. (2026-10-01) Instagram `/reels/audio/` links don't work with yt-dlp. Ask for a `/reel/` link that uses the sound.
-6. (2026-10-02) **Pacing beats the house style's ~3 s shots:** the user found 3 s shots + an 8 s reveal hold monotonous. Grind
-   shots 1-2 beats (max 4), cut ON the drop, keep the reveal moving (new angle / moment / slow-mo every 2-4 beats, no shot over
-   ~3 s), 12-25 shots per 15-20 s. Add beat motion: zoom punch on beats, shake + white flash on the drop.
+## Feedback → rules (taste checklist R2, R6)
+Every note the user gives (typed, a voice note, notes on the plan, the stills or a render) becomes a rule in
+`{{REEL_STUDIO_DIR}}/taste-checklist.md` BEFORE you change anything: add a `### R<n> · <short rule>` block under "## Rules from your
+feedback" (next free number, never renumber) with `- Added: <date> · Topic: <topic> · Type: taste · Status: active`,
+`- Your words: "<the note, verbatim>"` and `- In practice: <what it means for every future edit, with numbers>`. A note that
+repeats a rule gets an `- Also said: <date> "<words>"` line instead. A note that contradicts an active rule: stop and ask the
+user which wins (new note / old rule / this video only). If the new one wins, set the old rule's Status to disabled and add
+`- Replaced by: R<n> (<date>, why)`. Never delete a rule without asking.
+The numbered feedback rules that used to live here moved to the checklist on 2026-10-21 (horizontal crop R14, grey grind →
+colour R21, music deliverables R25, fitting a short sound R15, Instagram /reel/ links R26, pacing R16, grain R29).

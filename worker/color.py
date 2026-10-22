@@ -36,7 +36,7 @@ def probe_color(path: str) -> dict:
     """Colour + timing facts of the first video stream (display orientation)."""
     out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                           "stream=codec_name,width,height,pix_fmt,color_range,color_space,color_transfer,color_primaries,"
-                          "r_frame_rate,avg_frame_rate,nb_frames,bit_rate:stream_side_data=rotation,dv_profile:format=duration",
+                          "r_frame_rate,avg_frame_rate,nb_frames,bit_rate:stream_tags=alpha_mode:stream_side_data=rotation,dv_profile:format=duration",
                           "-of", "json", path], capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
     try:
         j = json.loads(out)
@@ -55,6 +55,12 @@ def probe_color(path: str) -> dict:
         w, h = h, w
     fr = lambda v: (lambda a, b: a / b if b else 0.0)(*map(float, (v or "0/1").split("/")))  # noqa: E731
     pix = s.get("pix_fmt") or ""
+    # VP9 with alpha (inserts, ReelSmith graphics) reports yuv420p: the alpha is a side stream that only the libvpx
+    # decoder reads (render.py puts -c:v libvpx-vp9 before the input)
+    tags = {k.lower(): v for k, v in (s.get("tags") or {}).items()}  # webm writes ALPHA_MODE, others alpha_mode
+    vp9_alpha = s.get("codec_name") == "vp9" and str(tags.get("alpha_mode", "")) == "1"
+    if vp9_alpha:
+        pix = "yuva420p"
     trc = s.get("color_transfer") or ""
     return {
         "video": True, "codec": s.get("codec_name"), "width": w, "height": h, "rotation": rot, "pix_fmt": pix,
@@ -66,7 +72,7 @@ def probe_color(path: str) -> dict:
         "frames": int(s["nb_frames"]) if str(s.get("nb_frames", "")).isdigit() else None,
         "bit_rate": int(s["bit_rate"]) if str(s.get("bit_rate", "")).isdigit() else None,
         "duration": float(j.get("format", {}).get("duration") or 0), "dolby_vision": dv,
-        "hdr": trc in HDR_TRC,
+        "hdr": trc in HDR_TRC, "vp9_alpha": vp9_alpha,
     }
 
 

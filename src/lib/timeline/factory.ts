@@ -42,6 +42,7 @@ export function emptyTimeline(aspect: Aspect): Timeline {
     transcripts: {},
     captions: { enabled: true, style: "bold", y: aspect === "16:9" ? 0.82 : 0.72, size: CAPTION_SIZE[aspect], maxWords: 4, edits: {} },
     duckLevel: 0.2,
+    audio: { autoDuck: true, sfxHeadroomDb: 6 },
   };
 }
 
@@ -147,7 +148,7 @@ export const TEXT_PRESETS: Record<
 };
 
 // Rough average glyph width (em) per font, uppercase-weighted, for auto line wrapping.
-const CHAR_EM: Record<TextStyle["font"], number> = { inter: 0.62, montserrat: 0.74, bebas: 0.42, playfair: 0.56, marker: 0.62 };
+const CHAR_EM: Record<TextStyle["font"], number> = { inter: 0.62, montserrat: 0.74, bebas: 0.42, playfair: 0.56, "playfair-italic": 0.52, marker: 0.62 };
 
 /** Greedy-wrap text so each line fits ~88% of the frame width; shrink if one word is still too long. */
 export function fitText(text: string, style: TextStyle, frameWidth: number): { text: string; size: number } {

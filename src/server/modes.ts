@@ -7,7 +7,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileS
 import crypto from "node:crypto";
 import path from "node:path";
 import type { MediaAsset, Prisma, Project } from "@prisma/client";
-import { fwd, studioDir } from "@/agent/config";
+import { appDir, creatorDir, fwd, studioDir, workerPython } from "@/agent/config";
 import {
   PLAN_SCHEMAS,
   type AutoClipPlan,
@@ -23,12 +23,15 @@ import { placement } from "@/lib/timeline/derive";
 import { emptyTimeline, newAudioClip, newTextClip, newVisualClip } from "@/lib/timeline/factory";
 import { DESIGN_SIZE, type Aspect, type AudioClip, type Enhance, type Filters, type Grade, type TextClip, type Timeline, type Transform, type VisualClip, type Word } from "@/lib/timeline/types";
 import { setBackground } from "@/lib/timeline/matte";
-import { createJob, ensureProjectDir, lastSession, localMediaPath } from "./agent";
+import { createJob, ensureProjectDir, localMediaPath, projectSession } from "./agent";
 import { queueMattesFor } from "./matte";
 import { prisma } from "./db";
 import { HttpError } from "./http";
 import { sourceFps } from "./probe";
 import { localPath, publicUrl } from "./storage";
+import { withClientLook } from "./looks";
+import { absorbNotes, notesBlock } from "./rules";
+import { failCheck, finishCheck, fixBrief, startCheck, takeReport } from "./rulecheck";
 
 export const MODES: Record<PlanMode, { label: string; roles: Record<string, { label: string; many: boolean; required: boolean }> }> = {
   music: {
@@ -63,6 +66,7 @@ export interface ModeInputs {
   minSec?: number;
   maxSec?: number;
   grade?: Grade | null; // talking head / best take: a look applied to every clip on approve (Cinematic Warm)
+  creator?: string | null; // a creator profile (creator-profiles/<handle>): guides the plan; stage 2 applies the rest
 }
 
 const SAFE_TOP = 250 / 1920;
@@ -84,18 +88,19 @@ function toolsBlock(dir: string) {
   const er = `${s}/.claude/skills/edit-reel/scripts`;
   const vu = `${s}/.claude/skills/video-use/helpers`;
   return `## Tools (all local and free; never call a paid API)
-- Transcribe (faster-whisper, word level, CPU), ONE call for all files that contain speech:
-  python ${er}/transcribe.py --out ${dir}/edit <file> [<file> ...]
-  -> ${dir}/edit/transcript.json ([{clip: file name, words: [{word, start, end, prob}]}]) + transcript.txt (phrases).
-  ReelSmith builds the captions from this file, so keep it. Never use video-use's transcribe.py (ElevenLabs).
-  Whisper invents short words ("you", "thank you") on silent clips: ignore clips with <3 low-probability words.
+- PRECOMPUTED before you started (do not run these again, do not look for scripts, do not try alternatives):
+  ${dir}/edit/prep.json (per file: duration, size, fps, lowRes, hasAudio, speech, words, language; plus step timings),
+  ${dir}/edit/transcript.json ([{clip: file name, language, words: [{word, start, end, prob}]}]) for the clips with speech,
+  ${dir}/edit/transcript.txt (phrases), and ${dir}/edit/music.json (beats, if a track was given).
+  Clips marked speech:false have no words worth using: they are silent or only background sound.
+  If a file you need is missing from prep.json, say so in "summary" and skip it. Do not transcribe it yourself.
 - Cut cleaning for speech: python ${er}/speech_cuts.py ${dir}/edit/transcript.json <file name> --src-dir <its folder> --max-gap 0.3 --phrases [--drop i-j,...] --out ${dir}/edit/cuts_<n>.json
   Removes fillers (um, uh, comma-delimited "like", "you know"/"I mean" with --phrases), stutters and pauses over --max-gap,
   and snaps every cut to the quietest 10 ms next to the word boundary (never mid-word). It prints the word table (index i).
 - Look at footage: python ${er}/contact_sheet.py <video> ${dir}/edit/verify/<name>.png --n 12 (or --start S --end E --every 0.5),
   then Read the PNG. Drill-down at a decision point: python ${vu}/timeline_view.py <video> <start> <end> -o ${dir}/edit/verify/<name>.png
 - Loudness of a file/section: ffmpeg -hide_banner -ss S -t D -i <file> -af ebur128 -f null -   (read the Summary)
-- Beats/drops: python ${er}/beats.py <audio> --json ${dir}/edit/music.json
+- Beats/drops: read ${dir}/edit/music.json (precomputed; beat times, drop candidates, beat period).
 - Enhance (per source): write ${dir}/edit/enhance/spec.json ({"clips": [{"id": <asset id>, "type": "video", "path": <file>, "in": S, "len": S, "placedWidth": 1080, "name": "..."}]})
   then python ${s}/tools/enhance.py analyze --spec ${dir}/edit/enhance/spec.json --out ${dir}/edit/enhance/analysis.json and copy
   each clip's "settings" into plan.json "enhance": {"<asset id>": settings}. Look at the sheet_<id>.jpg files first.`;
@@ -110,7 +115,7 @@ const PLAN_RULES = `## plan.json rules
 - faceX/faceY: centre of the face as a fraction of the source frame (from a contact sheet), used to keep the face in frame
   for vertical crops and punch-ins.
 - Nobody can answer questions during this run. Decide, and put assumptions and anything the user should check in "summary".
-- Apply rules.md.`;
+- Apply every active rule of the taste checklist and avoid the known gotchas (both are in your instructions).`;
 
 function modePrompt(mode: PlanMode, p: Project, inputs: ModeInputs, assets: MediaAsset[], dir: string) {
   const roleOf = new Map<string, string>();
@@ -120,6 +125,10 @@ function modePrompt(mode: PlanMode, p: Project, inputs: ModeInputs, assets: Medi
 ## Inputs (asset id | role | type | file | duration | size | name)
 ${inputsTable(assets, roleOf)}
 ${inputs.notes ? `\n## Brief from the user\n${inputs.notes}\n` : ""}${
+    inputs.creator
+      ? `\n## Creator style: @${inputs.creator}\nRead ${fwd(creatorDir())}/${inputs.creator}/style.json (and teardown.md). Follow its pacing, hook and structure in this plan where\nthey don't conflict with the taste checklist (taste rules always win). Captions, zooms and overlays come in the stage-2 style pass.\n`
+      : ""
+  }${
     (inputs.assets.background ?? []).length
       ? `\n## Background image\nThe "background" input replaces the background behind the speaker: ReelSmith cuts the person out after approval and\nputs the image behind them. Don't analyse or use it. Prefer shots where the speaker is clearly separated from the background.\n`
       : ""
@@ -132,12 +141,12 @@ ${PLAN_RULES}
     case "talking_head":
       return `${head}
 ## Task: tight talking-head edit
-1. Transcribe every clip (one call).
+1. Read the transcripts (edit/transcript.json, precomputed). Clips with speech:false have no words to use.
 2. For each clip run speech_cuts.py with --phrases. Read the word table: retakes (the same line said again) keep the LAST
    take, false starts go too -> re-run with --drop for the earlier attempts. Keep the speaker's words otherwise.
 3. Contact sheet per clip -> faceX/faceY, and a caption y that is in the safe zone and not over the face (usually below the chin).
 4. Enhance the clips (enhance.py analyze over the kept windows) -> plan.enhance.
-5. Optional hook: a 2-6 word text for the first 2-3 s if the opening line needs one (sassy/motivational per rules.md).
+5. Optional hook: a 2-6 word text for the first 2-3 s if the opening line needs one (sassy/motivational, taste checklist R20).
 6. Write plan.json:
 {"summary": str, "script": "the cleaned script", "sources": [{"id", "faceX", "faceY"}],
  "segments": [{"sourceId", "in", "out", "text": "words in this segment", "include": true}],   // in play order
@@ -148,7 +157,7 @@ ReelSmith alternates 100%/110% punch-ins on jump cuts and adds word-timed captio
       return `${head}
 ## Task: best take of every line
 ${inputs.script ? `Script (align the takes to it line by line):\n"""\n${inputs.script}\n"""` : "No script: align the takes to each other (the line structure the takes share)."}
-1. Transcribe all takes (one call). Split the script into lines (sentences or short beats).
+1. Read the transcripts (edit/transcript.json, precomputed). Split the script into lines (sentences or short beats).
 2. For every line find it in every take (word boundaries; run speech_cuts.py per take for clean edges if needed) and
    score each candidate 0-10 on: delivery (no stumbles, clear words, energy, pace), audio quality (noise, level, clipping:
    use ebur128 on the span), framing, focus and lighting (contact sheet / timeline_view of the span). "score" = overall.
@@ -163,7 +172,7 @@ ${inputs.script ? `Script (align the takes to it line by line):\n"""\n${inputs.s
     case "voiceover_broll":
       return `${head}
 ## Task: voiceover with matched b-roll
-1. Transcribe the voice (one call). If the voice input is a video, note where the face is (faceX/faceY).
+1. Read the voice transcript (edit/transcript.json, precomputed). If the voice input is a video, note where the face is (faceX/faceY).
 2. Analyse every b-roll clip: contact sheet, what it shows (exercise, place, objects, action), its best moments (in/out)
    and quality (shake, focus, light).
 3. Split the voice into segments on word or phrase boundaries and match each to the b-roll that shows what is being said at that
@@ -184,8 +193,8 @@ Read ${fwd(studioDir())}/.claude/skills/edit-reel/SKILL.md and follow steps 1-4 
 plan the cut, music & beat sync). Differences in this headless run: do not ask, pick the recommended defaults (crop
 horizontals, grey grind -> colour reveal), do not build or render.
 ${(inputs.assets.music ?? []).length ? "The track is the music input." : inputs.musicUrl ? `Fetch the sound: python -m yt_dlp -x --audio-format mp3 -o ${dir}/edit/music.%(ext)s "${inputs.musicUrl}" (Instagram /reels/audio/ links don't work; say so in summary if it fails).` : "No track: cut to the footage's own rhythm; musicId and musicFile are null."}
-Run beats.py on the track (${dir}/edit/music.json); every cut on a beat or strong onset, the reveal on the drop. Enhance the shots' windows -> plan.enhance.
-## Pacing (rules.md feedback 2026-10-02: the old ~3 s shots and 8 s holds felt monotonous and lose watch time)
+Use the beats in ${dir}/edit/music.json (precomputed); every cut on a beat or strong onset, the reveal on the drop. Enhance the shots' windows -> plan.enhance.
+## Pacing (taste checklist R16, your feedback 2026-10-02: the old ~3 s shots and 8 s holds felt monotonous and lose watch time)
 - Hook: 2-3 cuts in the first 2 s; the first frame already moving.
 - Grind/build: 1-2 beats per shot (at 100-130 BPM about 0.5-1.2 s); never more than 4 beats on one shot.
 - Reveal: cut ON the drop, then keep changing every 2-4 beats (other angles, other moments of the payoff clip, a 0.6-0.8x slow-mo
@@ -207,7 +216,7 @@ on screen at least 1.2 s each (they don't need to change with every cut).`;
     case "auto_clip":
       return `${head}
 ## Task: cut ${inputs.count ?? 3} shorts from one long video
-1. Transcribe the source (one call; it can take a while).
+1. Read the source's transcript (edit/transcript.json, precomputed).
 2. Find the ${inputs.count ?? 3} strongest self-contained moments, ${inputs.minSec ?? 15}-${inputs.maxSec ?? 60} s each: a clear hook in the first
    2 s, one idea, a satisfying end (no trailing half sentence). Start and end on sentence boundaries.
 3. Score each 0-10 (hook strength, payoff, clarity, energy), write a short title and a 2-6 word on-screen hook.
@@ -241,35 +250,59 @@ export async function startPlan(project: Project) {
   const inputs = project.inputs as unknown as ModeInputs;
   const assets = await modeAssets(project.userId, inputs);
   const dir = fwd(ensureProjectDir(project.id));
+  // The fixed steps (probe, transcripts, beats) run first as one command, so the plan job only reads their output.
+  const musicIds = new Set(inputs.assets.music ?? []);
+  const filesOf = (track: boolean) =>
+    assets.filter((a) => musicIds.has(a.id) === track).map((a) => localMediaPath(a.url)).filter((p): p is string => Boolean(p));
+  const prep = await createJob({
+    userId: project.userId,
+    projectId: project.id,
+    kind: "prep",
+    title: `${MODES[mode].label}: prep`,
+    prompt: "",
+    exec: [
+      workerPython(), path.join(appDir(), "worker", "prepare.py"), "--dir", dir,
+      ...filesOf(false).flatMap((p) => ["--clip", p]),
+      ...filesOf(true).flatMap((p) => ["--audio", p]),
+    ],
+    timeoutSec: 20 * 60,
+  });
   const job = await createJob({
     userId: project.userId,
     projectId: project.id,
     kind: "plan",
     title: `${MODES[mode].label}: plan`,
     prompt: modePrompt(mode, project, inputs, assets, dir),
+    resumeSessionId: await projectSession(project.id), // continue the project's chat, if it started there
     outputFile: "plan.json",
     schema: `plan-${mode}` as SchemaName,
     freshOutput: true,
+    afterJobId: prep.id,
     timeoutSec: mode === "auto_clip" ? 3 * 3600 : 90 * 60,
   });
   await prisma.project.update({ where: { id: project.id }, data: { status: "planning", statusMessage: null, planJobId: job.id } });
   return job;
 }
 
-/** The user's edits are written back to plan.json, then the same Claude session revises it. */
-export async function revisePlan(project: Project, feedback: string, plan: unknown) {
+/**
+ * The user's edits are written back to plan.json, then the same Claude session revises it. notes = the feedback is the user's own
+ * (not already filed by a chat turn): the job turns it into rules first (taste checklist R2).
+ */
+export async function revisePlan(project: Project, feedback: string, plan: unknown, o: { notes?: boolean; title?: string } = {}) {
   const mode = project.mode as PlanMode;
   const parsed = PLAN_SCHEMAS[mode].safeParse(plan);
   if (!parsed.success) throw new HttpError(400, "The plan is invalid");
   const dir = ensureProjectDir(project.id);
   writeFileSync(path.join(dir, "plan.json"), JSON.stringify(parsed.data, null, 1));
+  const id = crypto.randomUUID().replace(/-/g, "").slice(0, 24);
   const job = await createJob({
+    id,
     userId: project.userId,
     projectId: project.id,
     kind: "plan",
-    title: `${MODES[mode].label}: revise`,
-    prompt: `The user reviewed plan.json (their table edits are already saved in it) and asks:\n"""\n${feedback}\n"""\n\nRevise plan.json accordingly (same shape, same rules). Keep everything they didn't ask to change. Say what you changed at the start of "summary".`,
-    resumeSessionId: await lastSession(project.id, "plan"),
+    title: o.title ?? `${MODES[mode].label}: revise`,
+    prompt: `The user reviewed plan.json (their table edits are already saved in it) and asks:\n"""\n${feedback}\n"""\n${o.notes ? notesBlock(dir, id, "cut") : ""}\nRevise plan.json accordingly (same shape, same rules). Keep everything they didn't ask to change. Fix the cause, not just the moment they named, and check the whole cut for the same problem (R4). Say what you changed at the start of "summary".`,
+    resumeSessionId: await projectSession(project.id),
     outputFile: "plan.json",
     schema: `plan-${mode}` as SchemaName,
     timeoutSec: 60 * 60,
@@ -278,18 +311,83 @@ export async function revisePlan(project: Project, feedback: string, plan: unkno
   return job;
 }
 
-/** Poll-time transition: planning -> review (plan.json valid) or plan_failed. */
+/**
+ * Poll-time transition: planning -> review (plan.json valid) or plan_failed. Before the cut is shown, a fresh checker checks
+ * it against the taste checklist (R5) and the project's session fixes what failed: plan job -> check -> fix job -> review.
+ */
 export async function syncPlanStatus(project: Project) {
   if (project.status !== "planning" || !project.planJobId) return project;
   const job = await prisma.agentJob.findUnique({ where: { id: project.planJobId } });
   if (!job || job.status === "queued" || job.status === "running") return project;
+  await absorbNotes(project, job.id, "cut"); // notes on the cut become rules even when the revision failed
+  const dir = ensureProjectDir(project.id);
+  const readPlan = () => {
+    const file = path.join(dir, "plan.json");
+    let raw: unknown = null;
+    try {
+      raw = existsSync(file) ? JSON.parse(readFileSync(file, "utf8").replace(/^﻿/, "")) : null;
+    } catch {
+      raw = null;
+    }
+    return PLAN_SCHEMAS[project.mode as PlanMode].safeParse(raw);
+  };
+  const review = (plan: unknown, statusMessage: string | null = null) =>
+    prisma.project.update({ where: { id: project.id }, data: { status: "review", statusMessage, plan: plan as Prisma.InputJsonValue } });
+
+  const fixOf = await prisma.ruleCheck.findFirst({ where: { fixJobId: job.id } });
+  if (fixOf) {
+    // the fix turn of a rule check finished: show the fixed cut (or the checked one, if the fix broke)
+    const parsed = job.status === "done" ? readPlan() : null;
+    if (parsed?.success) {
+      await finishCheck(project, fixOf.id);
+      return review(parsed.data);
+    }
+    writeFileSync(path.join(dir, "plan.json"), JSON.stringify(project.plan, null, 1));
+    await finishCheck(project, fixOf.id, { fixFailed: `the fix turn ${job.status === "done" ? "wrote an invalid plan" : job.status}; showing the cut as it was checked` });
+    return review(project.plan);
+  }
   if (job.status !== "done") {
     return prisma.project.update({ where: { id: project.id }, data: { status: "plan_failed", statusMessage: job.error ?? `Planning ${job.status}` } });
   }
-  const file = path.join(ensureProjectDir(project.id), "plan.json");
-  const parsed = PLAN_SCHEMAS[project.mode as PlanMode].safeParse(existsSync(file) ? JSON.parse(readFileSync(file, "utf8").replace(/^﻿/, "")) : null);
+  const parsed = readPlan();
   if (!parsed.success) return prisma.project.update({ where: { id: project.id }, data: { status: "plan_failed", statusMessage: "plan.json is invalid" } });
-  return prisma.project.update({ where: { id: project.id }, data: { status: "review", statusMessage: null, plan: parsed.data as Prisma.InputJsonValue } });
+
+  // R5: a fresh check of this cut before it is shown
+  let rc = await prisma.ruleCheck.findFirst({ where: { subjectJobId: job.id } });
+  if (!rc) {
+    try {
+      await startCheck(project, "cut", job.id);
+    } catch (err) {
+      return review(parsed.data, `Rule check skipped: ${(err as Error).message}`);
+    }
+    return prisma.project.update({
+      where: { id: project.id },
+      data: { plan: parsed.data as Prisma.InputJsonValue, statusMessage: "A fresh checker is checking the cut against your taste checklist" },
+    });
+  }
+  if (rc.status === "checking") {
+    const r = await takeReport(project, rc);
+    if (r.state === "running") return project;
+    if (r.state === "failed") {
+      await failCheck(project, rc.id, r.note);
+      return review(parsed.data);
+    }
+    if (!r.toFix.length) {
+      await finishCheck(project, rc.id);
+      return review(parsed.data);
+    }
+    rc = (await prisma.ruleCheck.findUnique({ where: { id: rc.id } }))!;
+    const fix = await revisePlan({ ...project, plan: parsed.data as Prisma.JsonValue }, fixBrief(rc.id, r.report, dir), parsed.data, {
+      title: `${MODES[project.mode as PlanMode].label}: fix what the rule check found`,
+    });
+    await prisma.ruleCheck.update({ where: { id: rc.id }, data: { status: "fixing", fixJobId: fix.id } });
+    return prisma.project.update({
+      where: { id: project.id },
+      data: { statusMessage: `Fixing ${r.toFix.length} thing${r.toFix.length > 1 ? "s" : ""} the rule check found` },
+    });
+  }
+  // the check of this plan is already closed: show it
+  return review(parsed.data);
 }
 
 // ---------------------------------------------------------------- building
@@ -316,7 +414,7 @@ function loadTranscripts(projectId: string, assets: MediaAsset[]) {
   return out;
 }
 
-/** Largest zoom that doesn't scale the source past its own resolution (rules.md: no upscaling past the source). */
+/** Largest zoom that doesn't scale the source past its own resolution (taste checklist R13: no upscaling past the source). */
 export function maxZoom(ctx: Ctx, a: MediaAsset) {
   const base = Math.max(ctx.W / (a.width ?? ctx.W), ctx.H / (a.height ?? ctx.H));
   return Math.max(1, 1 / base);
@@ -573,6 +671,8 @@ function importProjectFile(userId: string, projectId: string, rel: string) {
 
 async function saveTimeline(projectId: string, tl: Timeline, duration: number, label: string, thumb: string | null) {
   tl.fps = await sourceFps(tl);
+  const owner = await prisma.project.findUnique({ where: { id: projectId }, select: { userId: true } });
+  if (owner) await withClientLook(owner.userId, tl); // the client's default look (brand kit); the editor builds it
   const json = tl as unknown as Prisma.InputJsonValue;
   await prisma.$transaction([
     prisma.timeline.upsert({ where: { projectId }, create: { projectId, json }, update: { json, revision: { increment: 1 } } }),

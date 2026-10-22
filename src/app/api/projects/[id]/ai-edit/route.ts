@@ -3,7 +3,9 @@ import path from "node:path";
 import { z } from "zod";
 import { prisma } from "@/server/db";
 import { aiEditInput, aiEditPrompt, resolveAiEdit } from "@/server/aiedit";
+import crypto from "node:crypto";
 import { createJob, ensureProjectDir, jobDTO, lastSession, readResult } from "@/server/agent";
+import { absorbNotes, notesBlock } from "@/server/rules";
 import { HttpError, ownedProject, requireUserId, route, type Ctx } from "@/server/http";
 import { assertTimeline } from "@/server/validate";
 import { aiEditSchema, type AiEditResult } from "@/agent/schemas";
@@ -24,12 +26,16 @@ export const POST = route(async (req: Request, ctx: Ctx<{ id: string }>) => {
 
   const dir = ensureProjectDir(id);
   writeFileSync(path.join(dir, "edit", "ai-timeline.json"), JSON.stringify(aiEditInput(tl), null, 1));
+  const jid = crypto.randomUUID().replace(/-/g, "").slice(0, 24);
   const job = await createJob({
+    id: jid,
     userId,
     projectId: id,
     kind: "ai_edit",
     title: `AI edit: ${parsed.data.command.slice(0, 80)}`,
-    prompt: aiEditPrompt(parsed.data.command, `${fwd(dir)}/edit/ai-timeline.json`),
+    // the command is the user's own note: it becomes a taste-checklist rule first when it states a preference (R2)
+    prompt: `${aiEditPrompt(parsed.data.command, `${fwd(dir)}/edit/ai-timeline.json`)}
+${notesBlock(dir, jid, "ai_edit")}`,
     resumeSessionId: await lastSession(id, "ai_edit"),
     outputFile: "ai-edit.json",
     schema: "ai-edit",
@@ -45,10 +51,11 @@ export const POST = route(async (req: Request, ctx: Ctx<{ id: string }>) => {
 export const GET = route(async (req: Request, ctx: Ctx<{ id: string }>) => {
   const userId = await requireUserId();
   const { id } = await ctx.params;
-  await ownedProject(id, userId);
+  const project = await ownedProject(id, userId);
   const jobId = new URL(req.url).searchParams.get("jobId") ?? "";
   const job = await prisma.agentJob.findFirst({ where: { id: jobId, projectId: id, userId, kind: "ai_edit" } });
   if (!job) throw new HttpError(404, "Job not found");
+  await absorbNotes(project, job.id, "ai_edit");
   if (job.status !== "done") throw new HttpError(409, job.error ?? `The job is ${job.status}`);
   const res = aiEditSchema.safeParse(readResult<AiEditResult>(id, "ai-edit.json"));
   if (!res.success) throw new HttpError(500, "ai-edit.json is missing or invalid");

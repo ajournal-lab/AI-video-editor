@@ -34,6 +34,24 @@ LOOKS = {
         "skin_protect": 0.85,  # how much of the split tone skin is shielded from
         "vignette": 0.3,       # corner darkening at intensity 1
     },
+    # Cool girl look: warm, soft and lifted (low contrast, creamy highlights), gentle vignette
+    "warm_soft": {
+        "contrast": 0.08, "lift": 0.05, "roll": 0.97,
+        "shadows": (0.02, 0.008, -0.012), "highlights": (0.05, 0.02, -0.045),
+        "bg_desat": 0.08, "skin_protect": 0.6, "vignette": 0.15,
+    },
+    # Cool dude look: dark editorial. The room falls back (darker, cooler, desaturated, heavy vignette) ...
+    "dark_editorial": {
+        "contrast": 0.3, "lift": 0.012, "roll": 0.8,
+        "shadows": (-0.012, 0.0, 0.012), "highlights": (0.0, 0.0, -0.012),
+        "bg_desat": 0.35, "skin_protect": 0.7, "vignette": 0.6,
+    },
+    # ... while the speaker (the Cut-out copy on top) stays lit: punchy but bright, no vignette
+    "editorial_subject": {
+        "contrast": 0.22, "lift": 0.02, "roll": 0.99,
+        "shadows": (0.0, 0.0, 0.01), "highlights": (0.02, 0.01, -0.01),
+        "bg_desat": 0.15, "skin_protect": 0.85, "vignette": 0.0,
+    },
 }
 VIGNETTE_R0, VIGNETTE_R1 = 0.45, 1.05  # radius (fraction of the half-diagonal) where darkening starts / is full
 

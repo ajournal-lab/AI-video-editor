@@ -42,8 +42,8 @@ export const DELETE = route(async (_req: Request, ctx: Ctx<{ id: string }>) => {
   const userId = await requireUserId();
   const { id } = await ctx.params;
   await ownedProject(id, userId);
-  const renders = await prisma.renderJob.findMany({ where: { projectId: id }, select: { outputKey: true } });
+  const renders = await prisma.renderJob.findMany({ where: { projectId: id }, select: { outputKey: true, previewKey: true } });
   await prisma.project.delete({ where: { id } });
-  await Promise.all(renders.filter((r) => r.outputKey).map((r) => deleteObject(r.outputKey!)));
+  await Promise.all(renders.flatMap((r) => [r.outputKey, r.previewKey]).filter(Boolean).map((k) => deleteObject(k!)));
   return { ok: true };
 });

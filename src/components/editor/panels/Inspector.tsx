@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import { ClipboardCopy, ExternalLink, Film, ImageIcon, Music, Palette, Plus, RefreshCw, RotateCcw, Trash2, Type, X } from "lucide-react";
 import { toast } from "sonner";
 import { copyScenePrompt } from "../quickimport";
-import { adjacentPrev, clipEnd, findClip, GRADE_LOOKS, keyframeGain } from "@/lib/timeline/derive";
+import { adjacentPrev, audioSafety, clipDucks, clipEnd, findClip, GRADE_LOOKS, keyframeGain } from "@/lib/timeline/derive";
 import { DEFAULT_FILTERS, DEFAULT_GRADE_INTENSITY, DEFAULT_TRANSFORM } from "@/lib/timeline/factory";
 import { FONTS, FONT_IDS } from "@/lib/timeline/fonts";
 import { deleteClips, moveClip, trimClip, updateClip } from "@/lib/timeline/ops";
@@ -315,6 +315,7 @@ function SoundSource({ clip }: { clip: AudioClip }) {
 
 function AudioInspector({ clip, isMusic }: { clip: AudioClip; isMusic: boolean }) {
   const e = useClipEdit(clip.id);
+  const tl = useEditor((s) => s.timeline);
   const playhead = useEditor((s) => s.playhead);
   const kfs = [...(clip.keyframes ?? [])].sort((a, b) => a.t - b.t);
   const local = Math.min(clip.duration, Math.max(0, playhead - clip.start));
@@ -327,9 +328,15 @@ function AudioInspector({ clip, isMusic }: { clip: AudioClip; isMusic: boolean }
       {isMusic && (
         <Section title="Ducking">
           <div className="flex items-center justify-between">
-            <Label className="text-xs text-muted-foreground">Lower under the voice</Label>
-            <Switch checked={Boolean(clip.duck)} onCheckedChange={(v) => e.set({ duck: v }, "Ducking")} />
+            <Label className="text-xs text-muted-foreground">Sound effect (never ducked, kept {audioSafety(tl).sfxHeadroomDb} dB under the voice)</Label>
+            <Switch checked={Boolean(clip.sfx)} onCheckedChange={(v) => e.set({ sfx: v || undefined, duck: v ? false : clip.duck }, v ? "Mark as sound effect" : "Mark as music")} />
           </div>
+          {!clip.sfx && (
+            <div className="flex items-center justify-between">
+              <Label className="text-xs text-muted-foreground">Lower under the voice{clip.duck === undefined ? " (auto)" : ""}</Label>
+              <Switch checked={clipDucks(tl, clip)} onCheckedChange={(v) => e.set({ duck: v }, "Ducking")} />
+            </div>
+          )}
           <DuckLevel />
         </Section>
       )}

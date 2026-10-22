@@ -5,7 +5,10 @@ import { Pause, Play, SkipBack, StepBack, StepForward } from "lucide-react";
 import { timelineDuration } from "@/lib/timeline/derive";
 import { FONT_IDS, cssFont } from "@/lib/timeline/fonts";
 import { Button } from "@/components/ui/button";
+import { withInsertSrc } from "@/lib/timeline/inserts";
+import type { Timeline } from "@/lib/timeline/types";
 import { useEditor } from "../store";
+import { useInserts } from "../inserts-store";
 import { drawFrame } from "./draw";
 import { MediaPool } from "./media-pool";
 import { formatTime } from "../format";
@@ -53,11 +56,20 @@ export function Player() {
     // Canvas text needs the fonts loaded or the first frames use a fallback face.
     Promise.all(FONT_IDS.map((f) => document.fonts.load(cssFont(f, 48)))).catch(() => {});
 
+    // built inserts get their src (InsertJob output) without touching the saved timeline
+    let memo: { tl: Timeline | null; by: object | null; out: Timeline | null } = { tl: null, by: null, out: null };
+    const shown = (tl: Timeline) => {
+      const by = useInserts.getState().by;
+      if (memo.tl !== tl || memo.by !== by) memo = { tl, by, out: withInsertSrc(tl, by) };
+      return memo.out!;
+    };
+
     const loop = () => {
       raf = requestAnimationFrame(loop);
       const s = useEditor.getState();
-      const tl = s.preview ?? s.timeline;
-      if (!tl) return;
+      const raw = s.preview ?? s.timeline;
+      if (!raw) return;
+      const tl = shown(raw);
       const dur = timelineDuration(tl);
       let t = s.playhead;
       if (s.playing) {

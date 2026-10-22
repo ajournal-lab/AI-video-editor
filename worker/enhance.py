@@ -45,7 +45,7 @@ from media import ffmpeg_bin, probe  # noqa: E402
 import color  # noqa: E402
 
 # ------------------------------------------------------------------ defaults
-# Keep in sync with the "Enhance defaults" section of workspace/rules.md (copied to REEL_STUDIO_DIR by setup).
+# Keep in sync with rule R36 (Enhance) of workspace/taste-checklist.md (copied to REEL_STUDIO_DIR by setup).
 D = {
     "fps": 30,
     "shake_on": 0.30,          # stabilise when high-frequency jitter RMS > this % of frame width
@@ -799,9 +799,11 @@ def _esrgan(src_dir: Path, dst_dir: Path):
     if not exe:
         raise RuntimeError("Real-ESRGAN not found. Run setup.bat (it installs realesrgan-ncnn-vulkan into <REEL_STUDIO_DIR>/tools/realesrgan) "
                            "(see README) or set REALESRGAN_BIN.")
-    # -g -1 = CPU (ncnn). Override with REALESRGAN_GPU only if you explicitly want a GPU.
+    # The official realesrgan-ncnn-vulkan build has no CPU mode ("-g -1" is rejected as an invalid device): it runs on
+    # whatever Vulkan device it finds (an integrated Intel/AMD GPU is enough). REALESRGAN_GPU picks a device id.
+    gpu = os.environ.get("REALESRGAN_GPU")
     args = [exe, "-i", str(src_dir), "-o", str(dst_dir), "-n", os.environ.get("REALESRGAN_MODEL", "realesrgan-x4plus"),
-            "-s", "4", "-f", "png", "-g", os.environ.get("REALESRGAN_GPU", "-1"), "-j", "1:2:2"]
+            "-s", "4", "-f", "png", *(["-g", gpu] if gpu else []), "-j", "1:2:2"]
     p = subprocess.run(args, capture_output=True, text=True, cwd=str(Path(exe).parent))
     if p.returncode != 0:
         raise RuntimeError(f"Real-ESRGAN failed: {(p.stderr or p.stdout)[-600:]}")

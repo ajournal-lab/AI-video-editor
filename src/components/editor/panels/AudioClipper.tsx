@@ -5,7 +5,7 @@ import { ExternalLink, Loader2, Magnet, Pause, Play, Plus, Repeat, ShieldAlert, 
 import { toast } from "sonner";
 import { api } from "@/lib/client/api";
 import type { AssetDTO, LinkAudioAnalysis } from "@/lib/client/upload";
-import { clamp } from "@/lib/timeline/derive";
+import { clamp, SFX_MAX_SECONDS } from "@/lib/timeline/derive";
 import { newAudioClip } from "@/lib/timeline/factory";
 import { addClip } from "@/lib/timeline/ops";
 import type { AudioClip } from "@/lib/timeline/types";
@@ -45,9 +45,29 @@ function defaultSelection(an: LinkAudioAnalysis | null, dur: number) {
 
 export function AudioClipper({ asset, open, onOpenChange, onAssetChange }: { asset: AssetDTO; open: boolean; onOpenChange: (v: boolean) => void; onAssetChange: (a: AssetDTO) => void }) {
   const info = linkInfo(asset);
-  const an = info?.analysis ?? null;
+  // beat grid + drop: link imports have it already; uploaded tracks are analysed the first time they're clipped
+  const an = (info?.analysis ?? (asset.meta?.analysis as LinkAudioAnalysis | undefined) ?? null) as LinkAudioAnalysis | null;
   const dur = an?.duration ?? asset.duration ?? 0;
   const [sel, setSel] = useState(() => defaultSelection(an, dur));
+  const [analysing, setAnalysing] = useState(false);
+  const short = (asset.duration ?? Infinity) <= SFX_MAX_SECONDS;
+  useEffect(() => {
+    if (!open || an || short) return;
+    let alive = true;
+    setAnalysing(true);
+    api<{ asset: AssetDTO; analysis: LinkAudioAnalysis }>(`/api/media/${asset.id}/beats`, { method: "POST" })
+      .then((r) => {
+        if (!alive) return;
+        onAssetChange(r.asset);
+        setSel(defaultSelection(r.analysis, r.analysis.duration || dur));
+      })
+      .catch(() => {}) // no beat (speech, ambience): the clipper still works without the grid
+      .finally(() => alive && setAnalysing(false));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, asset.id]);
   const [snapOn, setSnapOn] = useState(true);
   const [loop, setLoop] = useState(true);
   const [fadeIn, setFadeIn] = useState(0.05);
@@ -296,8 +316,9 @@ export function AudioClipper({ asset, open, onOpenChange, onAssetChange }: { ass
       in: Math.round(sel.start * 1000) / 1000,
       duration: Math.round(len * 1000) / 1000,
       srcDuration: dur,
-      volume: hasVoice ? 0.5 : 1,
-      duck: hasVoice,
+      volume: short ? 0.6 : hasVoice ? 0.5 : 1,
+      duck: short ? false : hasVoice,
+      sfx: short || undefined, // a short sound is a sound effect (audio safety: never ducked, kept under the voice)
       fadeIn: Math.min(fadeIn, len / 2),
       fadeOut: Math.min(fadeOut, len / 2),
       link: info ? { url: info.link.url, kind: info.link.kind, start: Math.round(sel.start * 1000) / 1000, end: Math.round(sel.end * 1000) / 1000 } : null,
@@ -363,7 +384,7 @@ export function AudioClipper({ asset, open, onOpenChange, onAssetChange }: { ass
               <NumberField label="Start" value={Math.round(sel.start * 100) / 100} min={0} suffix="s" onCommit={(v) => setSel((s) => ({ start: clamp(v, 0, s.end - 0.2), end: s.end }))} />
               <NumberField label="End" value={Math.round(sel.end * 100) / 100} min={0} suffix="s" onCommit={(v) => setSel((s) => ({ start: s.start, end: clamp(v, s.start + 0.2, dur) }))} />
               <div className="flex flex-col justify-end pb-1 text-[11px] text-muted-foreground">
-                {len.toFixed(2)}s{an ? ` · ${beatsIn} beats` : ""}
+                {len.toFixed(2)}s{an ? ` · ${beatsIn} beats` : analysing ? " · finding the beat…" : ""}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">

@@ -7,6 +7,7 @@ import "server-only";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import { existsSync } from "node:fs";
+import path from "node:path";
 import type { Prisma } from "@prisma/client";
 import { matteScript, workerPython } from "@/agent/config";
 import { matteWindows } from "@/lib/timeline/matte";
@@ -14,7 +15,7 @@ import type { Timeline, VisualClip } from "@/lib/timeline/types";
 import { createJob, localMediaPath } from "./agent";
 import { prisma } from "./db";
 import { HttpError } from "./http";
-import { driver, localPath, publicUrl } from "./storage";
+import { driver, localPath, publicUrl, storageDir } from "./storage";
 
 export interface MatteEstimate {
   frames: number;
@@ -61,6 +62,25 @@ export async function estimateMatte(userId: string, src: string, srcIn: number, 
 /** Queue one matte job for a source window; the clips get matte {on: false, jobId} until it is done. */
 export async function queueMatte(userId: string, projectId: string, src: string, srcIn: number, srcLen: number, name: string) {
   const file = sourceFile(userId, src);
+  // the same window already cut out (or being cut out): reuse it. Looks re-apply often and must never queue twice.
+  const prev = await prisma.agentJob.findMany({
+    where: { userId, kind: "matte", status: { in: ["queued", "running", "done"] } },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+    select: { id: true, status: true, exec: true },
+  });
+  for (const j of prev) {
+    const a = JSON.parse(j.exec ?? "[]") as string[];
+    const at = (k: string) => a[a.indexOf(k) + 1];
+    const out = at("--out");
+    const pIn = Number(at("--in"));
+    const pLen = Number(at("--len"));
+    // any earlier cut-out that covers this source window will do (the clips read it at their own offset)
+    if (at("--src") !== file || !out || pIn > srcIn + 0.001 || pIn + pLen < srcIn + srcLen - 0.001) continue;
+    if (j.status === "done" && !existsSync(out)) continue;
+    const key = path.relative(storageDir(), out).split(path.sep).join("/");
+    return { job: (await prisma.agentJob.findUnique({ where: { id: j.id } }))!, url: publicUrl(key), srcIn: pIn, srcLen: pLen };
+  }
   const key = `u/${userId}/matte/${projectId}/${crypto.randomBytes(6).toString("hex")}-matte.webm`;
   const job = await createJob({
     userId,

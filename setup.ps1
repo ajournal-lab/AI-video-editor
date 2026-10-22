@@ -6,9 +6,9 @@ ReelSmith setup for Windows 10/11.
 
 Checks and, where possible, installs (winget): Node 22+, Python 3.11+, ffmpeg (gyan.dev full build), Git.
 Then: .env with this computer's paths, the worker venv + Python deps, npm packages, the Claude workspace
-(rules.md, CLAUDE.md, tools, edit-reel skill, video-use skill), HyperFrames, the Whisper model, the background-matte
+(taste-checklist.md, gotchas.md, CLAUDE.md, tools, edit-reel skill, video-use skill), HyperFrames, the Whisper model, the background-matte
 model, Real-ESRGAN, the database tables (prisma db push), and the Claude Code login. Ends with a pass/fail checklist.
-Safe to re-run: it keeps your .env values and your rules.md.
+Safe to re-run: it keeps your .env values, your taste checklist and your gotchas.
 #>
 [CmdletBinding()]
 param(
@@ -209,14 +209,15 @@ if (Have npm) {
 } else { Result "npm packages" "FAIL" "npm not found (install Node first)" }
 
 # ------------------------------------------------------------------ 8. Claude workspace
-Step "Claude workspace (rules.md, CLAUDE.md, tools, skills)"
+Step "Claude workspace (taste-checklist.md, gotchas.md, CLAUDE.md, tools, skills)"
 if ($Studio) {
   $tpl = Join-Path $Root "workspace"
   if (-not $CheckOnly) {
     Get-ChildItem $tpl -Recurse -File -Force | ForEach-Object {
       $rel = $_.FullName.Substring($tpl.Length + 1)
       $dst = Join-Path $Studio $rel
-      if ($rel -eq "rules.md" -and (Test-Path $dst)) { return }   # your rules and feedback stay
+      # your rules (with your words) and the problems already solved stay as they are
+      if (($rel -eq "taste-checklist.md" -or $rel -eq "gotchas.md") -and (Test-Path $dst)) { return }
       New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
       $text = [IO.File]::ReadAllText($_.FullName)
       $text = $text.Replace("{{REELSMITH_DIR}}", (Fwd $Root)).Replace("{{REEL_STUDIO_DIR}}", (Fwd $Studio))
@@ -224,10 +225,13 @@ if ($Studio) {
     }
     New-Item -ItemType Directory -Force (Join-Path $Studio "tools") | Out-Null
   }
-  $req = @("rules.md", "CLAUDE.md", "tools\enhance.py", "tools\transcribe_local.py", ".claude\skills\edit-reel\SKILL.md")
+  # rules.md was replaced by taste-checklist.md (2026-10-21): an old one with your own feedback is kept, but no longer read
+  $oldRules = Join-Path $Studio "rules.md"
+  if (Test-Path $oldRules) { Result "Old rules.md" "WARN" "no longer read: move any rules you added yourself into taste-checklist.md, then archive it" }
+  $req = @("taste-checklist.md", "gotchas.md", "CLAUDE.md", "tools\enhance.py", "tools\transcribe_local.py", ".claude\skills\edit-reel\SKILL.md")
   $gone = $req | Where-Object { -not (Test-Path (Join-Path $Studio $_)) }
   if ($gone) { Result "Workspace files" "FAIL" ("missing in ${Studio}: " + ($gone -join ", ")) }
-  else { Result "Workspace files" "PASS" "rules.md, CLAUDE.md, tools, edit-reel skill" }
+  else { Result "Workspace files" "PASS" "taste-checklist.md, gotchas.md, CLAUDE.md, tools, edit-reel skill" }
 
   # video-use skill (MIT, browser-use): cloned, not vendored; its LICENSE comes with the clone
   $vu = Join-Path $Studio ".claude\skills\video-use"

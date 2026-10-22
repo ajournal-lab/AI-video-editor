@@ -12,6 +12,7 @@ FONTS = {
     "montserrat": {"ass": "Montserrat Thin ExtraBold", "bold": False, "asc": 1.109, "desc": 0.453},
     "bebas": {"ass": "Bebas Neue", "bold": False, "asc": 0.95, "desc": 0.35},
     "playfair": {"ass": "Playfair Display", "bold": True, "asc": 1.159, "desc": 0.251},
+    "playfair-italic": {"ass": "Playfair Display", "bold": False, "italic": True, "asc": 1.159, "desc": 0.251},
     "marker": {"ass": "Permanent Marker", "bold": False, "asc": 1.1094, "desc": 0.3174},
 }
 
@@ -76,8 +77,9 @@ _SENTENCE_END = re.compile(r"[.!?][\"')\]]?$")
 def caption_lines(tl):
     words = [w for w in mapped_words(tl) if w["text"]]
     max_chars = CAPTION_MAX_CHARS[tl["aspect"]]
-    max_words = tl["captions"]["maxWords"]
+    segs = look_segments(tl)
     lines, cur = [], []
+    cur_look = None
 
     def push():
         nonlocal cur
@@ -86,12 +88,18 @@ def caption_lines(tl):
         cur = []
 
     for w in words:
+        look = seg_look_at(segs, w["start"])
         if cur:
             last = cur[-1]
             chars = sum(len(x["text"]) + 1 for x in cur) + len(w["text"])
+            max_words = tl["captions"]["maxWords"]
+            if look and LOOK_CAPTIONS[look] == "kinetic":
+                max_words = min(3, max_words)  # kinetic captions: at most 3 words at a time
             if (w["start"] - last["end"] > 0.6 or len(cur) >= max_words or chars > max_chars
-                    or _SENTENCE_END.search(last["text"])):
+                    or look != cur_look or _SENTENCE_END.search(last["text"])):
                 push()
+        if not cur:
+            cur_look = look
         cur.append(w)
     push()
     for i, line in enumerate(lines):
@@ -100,10 +108,104 @@ def caption_lines(tl):
             line["end"] = nxt["start"]
         else:
             line["end"] = min(line["end"] + 0.2, nxt["start"]) if nxt else line["end"] + 0.2
+    punch = punch_clips(tl)  # a look's punch line replaces the captions while it shows
+    if punch:
+        lines = [ln for ln in lines
+                 if not any(c["start"] <= (ln["start"] + ln["end"]) / 2 < clip_end(c) for c in punch)]
     return lines
 
 
+def punch_clips(tl):
+    return [c for t in tl["tracks"] if t["kind"] == "text" and not t.get("hidden")
+            for c in t["clips"] if c.get("role") == "punch"]
+
+
+# ------------------------------------------------------------------ looks (derive.ts lookSegments)
+
+LOOK_CAPTIONS = {"bold": "kinetic", "cool_girl": "calm", "cool_dude": "editorial"}
+PUNCH_COLOR = "#FFD60A"
+_LOOK_PRIORITY = {"script": 1, "chat": 2, "timeline": 3}
+
+
+def look_segments(tl):
+    L = tl.get("looks")
+    if not L or (not L.get("default") and not L.get("sections")):
+        return []
+    secs = L.get("sections") or []
+    T = max([timeline_duration(tl), 0.001] + [s["end"] for s in secs])
+    cuts = sorted({round(x, 3) for x in [0, T] + [v for s in secs for v in (s["start"], s["end"])] if 0 <= x <= T})
+    out = []
+    for a, b in zip(cuts, cuts[1:]):
+        if b - a < 1e-4:
+            continue
+        mid = (a + b) / 2
+        best, bp = None, 0
+        for s in secs:
+            if s["start"] <= mid < s["end"]:
+                p = _LOOK_PRIORITY.get(s.get("source"), 1)
+                if p >= bp:
+                    best, bp = s["look"], p
+        look = best or L.get("default") or None
+        if out and out[-1]["look"] == look and abs(out[-1]["end"] - a) < 1e-6:
+            out[-1]["end"] = b
+        else:
+            out.append({"start": a, "end": b, "look": look})
+    return out
+
+
+def seg_look_at(segs, t):
+    for s in segs:
+        if s["start"] <= t < s["end"]:
+            return s["look"]
+    return segs[-1]["look"] if segs and t >= segs[-1]["end"] else None
+
+
+def caption_style_at(tl, segs, t):
+    look = seg_look_at(segs, t)
+    return LOOK_CAPTIONS[look] if look else tl["captions"]["style"]
+
+
+KINETIC_ANCHORS = [(0.3, 0.36), (0.7, 0.47), (0.31, 0.58), (0.69, 0.33), (0.3, 0.48), (0.7, 0.6)]
+KINETIC_MAX_W = 0.44
+CAPTION_REVEAL = 0.1
+CAPTION_POP = 0.15
+CAPTION_POP_FROM = 0.8
+_CHAR_W = {"inter": 0.56, "montserrat": 0.62, "bebas": 0.4, "playfair": 0.52, "playfair-italic": 0.48, "marker": 0.58}
+
+
+def est_text_width(text, font, px, spacing=0.0, upper=False):
+    return len(text) * (_CHAR_W[font] * (1.12 if upper else 1) * px + spacing)
+
+
+def kinetic_place(line, index, look, W):
+    x, y = KINETIC_ANCHORS[index % len(KINETIC_ANCHORS)]
+    text = " ".join(w["text"] for w in line["words"])
+    est = est_text_width(text, look["font"], look["size"], look.get("letterSpacing", 0), look["uppercase"])
+    return x, y, min(1.0, KINETIC_MAX_W * W / max(1.0, est))
+
+
+# ------------------------------------------------------------------ sparkles (derive.ts SPARKLES)
+
+SPARKLE_HALF = 0.45
+SPARKLE_COLOR = "#FFF3B0"
+SPARKLES = [(-1, -1, -28, -6, 34, 0), (1, -1, 26, 2, 24, 1), (1, 1, 14, 10, 28, 0), (-1, 1, -10, 14, 20, 1)]
+STAR_PATH = "m 0 -20 b 3 -3 3 -3 20 0 b 3 3 3 3 0 20 b -3 3 -3 3 -20 0 b -3 -3 -3 -3 0 -20"
+
+
 def caption_look(style: str, size: float):
+    if style == "kinetic":
+        return {"font": "montserrat", "size": round(size * 0.95), "uppercase": False, "lowercase": True,
+                "outline": round(size * 0.07), "outlineColor": "#000000", "shadow": 0, "box": None,
+                "reveal": True, "pop": True, "layout": "kinetic",
+                "word": {"past": ("#FFFFFF", 1), "active": ("#FFFFFF", 1), "future": ("#FFFFFF", 1)}}
+    if style == "calm":
+        return {"font": "inter", "size": round(size * 0.62), "uppercase": False, "lowercase": True, "outline": 0,
+                "outlineColor": "#000000", "shadow": 3, "box": None, "lineFade": 0.25, "y": 0.7,
+                "word": {"past": ("#FFFFFF", 1), "active": ("#FFFFFF", 1), "future": ("#FFFFFF", 1)}}
+    if style == "editorial":
+        return {"font": "inter", "size": round(size * 0.4), "uppercase": True, "letterSpacing": round(size * 0.4 * 0.32),
+                "outline": 0, "outlineColor": "#000000", "shadow": 2, "box": None, "lineFade": 0.2, "y": 0.78,
+                "word": {"past": ("#FFFFFF", 0.92), "active": ("#FFFFFF", 0.92), "future": ("#FFFFFF", 0.92)}}
     if style == "bold":
         return {"font": "montserrat", "size": size, "uppercase": True, "outline": round(size * 0.09),
                 "outlineColor": "#000000", "shadow": 0, "box": None,
@@ -124,6 +226,21 @@ def caption_look(style: str, size: float):
 
 
 # ------------------------------------------------------------------ audio
+
+AUDIO_DEFAULTS = {"autoDuck": True, "sfxHeadroomDb": 6}
+
+
+def audio_safety(tl):
+    return {**AUDIO_DEFAULTS, **(tl.get("audio") or {})}
+
+
+def clip_ducks(tl, clip) -> bool:
+    """derive.ts clipDucks: music ducks under the voice (auto unless duck is false); sound effects never do."""
+    if clip.get("sfx"):
+        return False
+    d = clip.get("duck")
+    return audio_safety(tl)["autoDuck"] if d is None else bool(d)
+
 
 def speech_intervals(tl):
     tracks = []

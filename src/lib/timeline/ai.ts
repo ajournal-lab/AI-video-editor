@@ -2,15 +2,19 @@
 // visuals already resolved to concrete media), and the editor applies them to its
 // current timeline with applyAiOps(). The resulting JSON patch is shown as a diff
 // preview before the user applies it; applying is one undoable history step.
-import { clipEnd, findClip, mappedWords } from "./derive";
-import { newTextClip, TEXT_PRESETS } from "./factory";
+import { clipEnd, findClip, FX_DEFAULTS, mappedWords } from "./derive";
+import { zoomRoom } from "./beatfx";
+import { newTextClip, TEXT_PRESETS, uid } from "./factory";
+import { EMPTY_LOOKS, phraseSections, withLooks } from "./looks";
 import { addClip, cutSilences, deleteClips, moveClip, removeRanges, splitAt, trimClip, updateClip } from "./ops";
 import type {
   AnyClip,
+  BeatFx,
   CaptionStyle,
   FilterPreset,
   FontId,
   KenBurnsDirection,
+  LookId,
   TextAnimIn,
   TextAnimOut,
   Timeline,
@@ -37,7 +41,11 @@ export interface AiOp {
     | "move_clip"
     | "trim_clip"
     | "split"
-    | "remove_range";
+    | "remove_range"
+    | "zoom"
+    | "add_fx"
+    | "clear_fx"
+    | "set_looks";
   clipIds?: string[];
   // filters
   brightness?: number;
@@ -78,6 +86,16 @@ export interface AiOp {
   duration?: number;
   time?: number;
   minGap?: number;
+  // zoom (punch-in on clips; capped at what the source resolution allows)
+  scale?: number;
+  // beat/emphasis effects on the whole picture
+  fx?: "punch" | "shake" | "flash";
+  strength?: number;
+  // looks (set_looks): look + default (the project look) | phrase (sentences saying it) | start/end; clear = all off
+  look?: LookId | "none";
+  default?: boolean;
+  phrase?: string;
+  clear?: boolean;
 }
 
 const num = (v: unknown, lo: number, hi: number) => (typeof v === "number" && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : undefined);
@@ -91,6 +109,16 @@ const isVisual = (c: AnyClip): c is VisualClip => c.type === "video" || c.type =
 
 export function applyAiOp(tl: Timeline, o: AiOp): Timeline {
   switch (o.op) {
+    case "set_looks": {
+      // only the settings change here; the editor rebuilds the look content (looks-hook.ts), the server before a render
+      const cur = tl.looks ?? EMPTY_LOOKS;
+      if (o.clear) return withLooks(tl, { default: null, sections: cur.sections.filter((s) => s.source === "script") });
+      const look = o.look && o.look !== "none" ? o.look : null;
+      if (o.phrase && look) return withLooks(tl, { sections: [...cur.sections, ...phraseSections(tl, o.phrase, look)] });
+      if (look && o.start !== undefined && o.end !== undefined && o.end > o.start)
+        return withLooks(tl, { sections: [...cur.sections, { id: uid("ls"), start: o.start, end: o.end, look, source: "chat" }] });
+      return withLooks(tl, { default: look });
+    }
     case "cut_pauses":
       // Models sometimes send 0 for "all pauses"; anything under 0.3s means the default.
       return cutSilences(tl, o.minGap && o.minGap >= 0.3 ? Math.min(o.minGap, 5) : 0.7).timeline;
@@ -189,6 +217,41 @@ export function applyAiOp(tl: Timeline, o: AiOp): Timeline {
       return o.time !== undefined ? splitAt(tl, o.time, o.clipIds) : tl;
     case "remove_range":
       return o.start !== undefined && o.end !== undefined && o.end > o.start ? removeRanges(tl, [[o.start, o.end]]) : tl;
+    case "zoom": {
+      // punch-in: scale relative to the clip's framing, never past the source resolution (rules.md).
+      // With start/end instead of clipIds: split the video clips at both ends and zoom the part in between.
+      let ids = o.clipIds ?? [];
+      if (!ids.length && o.start !== undefined && o.end !== undefined && o.end > o.start) {
+        const vis = (t: Timeline) => t.tracks.filter((tr) => tr.kind === "video" && !tr.locked).flatMap((tr) => tr.clips as VisualClip[]).filter((c) => c.type === "video" || c.type === "image");
+        for (const at of [o.start, o.end]) {
+          const hit = vis(tl).filter((c) => c.start < at - 0.02 && clipEnd(c) > at + 0.02).map((c) => c.id);
+          if (hit.length) tl = splitAt(tl, at, hit);
+        }
+        ids = vis(tl).filter((c) => c.start >= o.start! - 0.03 && clipEnd(c) <= o.end! + 0.03).map((c) => c.id);
+      }
+      for (const c of clipsOf(tl, ids, (c) => c.type === "video" || c.type === "image") as VisualClip[]) {
+        const want = num(o.scale, 1, 1.5) ?? 1.1;
+        const room = zoomRoom(tl, { ...c, transform: { ...c.transform, scale: 1 } });
+        const scale = Math.round(Math.min(want, Math.max(1, room)) * 10000) / 10000;
+        tl = updateClip(tl, c.id, {
+          transform: { ...c.transform, scale, ...defined({ x: num(o.x, -0.5, 0.5), y: num(o.y, -0.5, 0.5) }) },
+        } as Partial<AnyClip>);
+      }
+      return tl;
+    }
+    case "add_fx": {
+      const type = o.fx && o.fx in FX_DEFAULTS ? o.fx : "punch";
+      const d = FX_DEFAULTS[type];
+      const t = num(o.time ?? o.start, 0, 36000);
+      if (t === undefined) return tl;
+      const fx: BeatFx = { type, t: Math.round(t * 1000) / 1000, strength: num(o.strength, 0, d.max) ?? d.strength, duration: num(o.duration, 0.05, 2) ?? d.duration };
+      return { ...tl, fx: [...(tl.fx ?? []), fx].sort((a, b) => a.t - b.t) };
+    }
+    case "clear_fx": {
+      const s0 = num(o.start, 0, 36000) ?? 0;
+      const e0 = num(o.end, 0, 36000) ?? Infinity;
+      return { ...tl, fx: (tl.fx ?? []).filter((f) => f.t < s0 || f.t > e0 || (o.fx !== undefined && f.type !== o.fx)) };
+    }
     default:
       return tl;
   }
@@ -213,6 +276,7 @@ export function describeForAi(tl: Timeline) {
     duration: r(Math.max(0, ...tl.tracks.flatMap((t) => (t.clips as AnyClip[]).map(clipEnd)))),
     captions: { enabled: tl.captions.enabled, style: tl.captions.style },
     duckLevel: tl.duckLevel,
+    fx: (tl.fx ?? []).map((f) => ({ type: f.type, t: f.t, strength: f.strength })),
     tracks: tl.tracks.map((t) => ({
       id: t.id,
       kind: t.kind,
@@ -228,6 +292,8 @@ export function describeForAi(tl: Timeline) {
           filters: c.filters,
           transition: c.transition?.type ?? "cut",
           kenBurns: c.kenBurns?.direction ?? null,
+          zoom: c.transform.scale !== 1 ? c.transform.scale : undefined,
+          maxZoom: c.type === "video" || c.type === "image" ? r(zoomRoom(tl, { ...c, transform: { ...c.transform, scale: 1 } })) : undefined,
           speed: c.speed,
           said: said(c.start, clipEnd(c)),
         };

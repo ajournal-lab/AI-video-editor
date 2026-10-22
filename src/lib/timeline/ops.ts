@@ -96,7 +96,8 @@ export function addClip(tl: Timeline, trackId: string | null, clip: AnyClip, kin
     let target = trackId ? d.tracks.find((t) => t.id === trackId) : undefined;
     if (!target || !compatible(target.kind, clip)) {
       const k: TrackKind = kind ?? (clip.type === "text" ? "text" : clip.type === "audio" ? "music" : "video");
-      target = d.tracks.find((t) => t.kind === k && !t.locked);
+      // never onto a track the looks / inserts manage (Cut-out, Inserts, Behind me, look text)
+      target = d.tracks.find((t) => t.kind === k && !t.locked && !t.role);
       if (!target) {
         target = newTrack(k, 1);
         d.tracks.push(target);

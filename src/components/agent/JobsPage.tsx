@@ -44,7 +44,7 @@ export function JobsPage() {
             <tbody>
               {jobs.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="px-3 py-6 text-center text-xs text-muted-foreground">
+                  <td colSpan={5} className="px-3 py-6 text-center text-xs text-muted-foreground">
                     No jobs yet. Open a project and use Claude in the editor.
                   </td>
                 </tr>

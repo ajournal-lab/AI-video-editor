@@ -114,25 +114,47 @@ export interface AssetDTO {
     hasAudio?: boolean;
     author?: string;
     // link-sourced music (Music panel → Paste link)
-    link?: { url: string; kind: "instagram" | "youtube" | "direct"; fetchedAt: string };
+    link?: { url: string; kind: "instagram" | "youtube" | "tiktok" | "vimeo" | "x" | "drive" | "direct"; fetchedAt: string };
+    uploader?: string | null;
     rights?: boolean; // false = timing only / personal use
     analysis?: LinkAudioAnalysis;
   } | null;
   createdAt: string;
+  duplicate?: boolean; // the upload / link was already in the library: this is the existing asset
 }
 
-/** Full library upload: inspect, upload file + thumbnail, register (server auto-tags). */
+/** SHA-256 of a file in the browser (hex), or null when it's too big to hash in memory / no WebCrypto. */
+export async function fileHash(file: Blob): Promise<string | null> {
+  if (!globalThis.crypto?.subtle || file.size > 1.5 * 1024 ** 3) return null;
+  try {
+    const d = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+    return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return null;
+  }
+}
+
+/** Full library upload: inspect, upload file + thumbnail, register (server auto-tags). A file that is already in the
+ *  library (same bytes) isn't uploaded again: the existing asset comes back with duplicate = true. */
 export async function uploadAsset(
   file: File,
   as: "auto" | "music",
   onProgress?: (p: number) => void,
   source: "upload" | "gemini_manual" = "upload",
 ): Promise<AssetDTO> {
+  const hash = await fileHash(file);
+  if (hash) {
+    const { asset: known } = await api<{ asset: AssetDTO | null }>("/api/media/exists", { method: "POST", json: { hash } });
+    if (known) {
+      onProgress?.(1);
+      return { ...known, duplicate: true };
+    }
+  }
   const info = await inspectFile(file);
   const type = as === "music" || (info.type === "audio" && as === "auto") ? "music" : info.type;
   const url = await uploadFile(file, file.name, type === "music" ? "music" : info.type, (p) => onProgress?.(p * 0.95));
   const thumbUrl = info.thumb ? await uploadFile(info.thumb, "thumb.jpg", "thumb") : null;
-  const { asset } = await api<{ asset: AssetDTO }>("/api/media", {
+  const { asset, duplicate } = await api<{ asset: AssetDTO; duplicate?: boolean }>("/api/media", {
     method: "POST",
     json: {
       source,
@@ -148,5 +170,11 @@ export async function uploadAsset(
     },
   });
   onProgress?.(1);
-  return asset;
+  return duplicate ? { ...asset, duplicate: true } : asset;
+}
+
+/** Import from a link (YouTube, Shorts, TikTok, Instagram, Vimeo, X, Google Drive, direct file). */
+export async function importLink(url: string): Promise<AssetDTO> {
+  const { asset, duplicate } = await api<{ asset: AssetDTO; duplicate: boolean }>("/api/media/link", { method: "POST", json: { url } });
+  return duplicate ? { ...asset, duplicate: true } : asset;
 }

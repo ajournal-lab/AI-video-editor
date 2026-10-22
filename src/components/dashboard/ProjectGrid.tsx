@@ -20,6 +20,7 @@ export interface ProjectCard {
   statusMessage: string | null;
   thumbnailUrl: string | null;
   duration: number;
+  creator?: string | null; // the creator style the edit uses
   isSample: boolean;
   updatedAt: string;
   renders: number;
@@ -170,6 +171,11 @@ export function ProjectGrid({ initial }: { initial: ProjectCard[] }) {
                     {group(p.status) === "processing" && <Loader2 className="mr-1 inline size-2.5 animate-spin" />}
                     {STATUS[p.status]?.label ?? p.status}
                   </span>
+                  {p.creator && (
+                    <span className="absolute bottom-2 left-2 max-w-[60%] truncate rounded-full bg-violet-600/80 px-2 py-0.5 text-[10px] font-medium text-white" title={`Edited in the style of @${p.creator}`}>
+                      @{p.creator}
+                    </span>
+                  )}
                   <Badge variant="secondary" className="absolute right-2 bottom-2 h-5 bg-black/60 px-1.5 text-[10px] text-white">
                     {p.aspect}
                     {p.duration ? ` · ${Math.round(p.duration)}s` : ""}

@@ -43,5 +43,6 @@ export const POST = route(async (req: Request, ctx: Ctx<{ id: string }>) => {
   if (project.status !== "review") throw new HttpError(409, "Wait until the plan is ready");
   const parsed = body.safeParse(raw);
   if (!parsed.success) throw new HttpError(400, "Write what you'd like to change");
-  return { job: jobDTO(await revisePlan(project, parsed.data.feedback, parsed.data.plan)) };
+  // the user's own notes on the cut: the revision files them as rules first (taste checklist R2)
+  return { job: jobDTO(await revisePlan(project, parsed.data.feedback, parsed.data.plan, { notes: true })) };
 });

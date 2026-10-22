@@ -4,6 +4,7 @@ import { prisma } from "@/server/db";
 import { HttpError, requireUserId, route } from "@/server/http";
 import { keyFromUrl } from "@/server/storage";
 import { nameTags } from "@/server/tagging";
+import { dedupeUpload } from "@/server/medialink";
 
 export const maxDuration = 30;
 
@@ -41,6 +42,9 @@ export const POST = route(async (req: Request) => {
   const d = parsed.data;
   const key = keyFromUrl(d.url);
   if (!key || !key.startsWith(`u/${userId}/`)) throw new HttpError(400, "Upload the file first");
+  // the same bytes already in the library (sha256): drop the new copy, hand back the existing asset
+  const { hash, existing } = await dedupeUpload(userId, key, d.thumbUrl ? keyFromUrl(d.thumbUrl) : null);
+  if (existing) return { asset: existing, duplicate: true };
   let tags = d.tags ?? [];
   if (d.source === "gemini_manual") tags = ["gemini", ...tags];
   if (d.source === "upload") {
@@ -60,9 +64,10 @@ export const POST = route(async (req: Request) => {
       duration: d.duration ?? null,
       width: d.width ?? null,
       height: d.height ?? null,
+      hash,
       tags: [...new Set(tags)].slice(0, 20),
       meta: { ...(d.meta ?? {}), hasAudio: d.hasAudio ?? d.type !== "image" } as Prisma.InputJsonValue,
     },
   });
-  return { asset };
+  return { asset, duplicate: false };
 });

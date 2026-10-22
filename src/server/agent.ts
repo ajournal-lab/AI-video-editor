@@ -9,6 +9,8 @@ import type { Timeline } from "@/lib/timeline/types";
 import { keyFromUrl, localPath } from "./storage";
 
 export interface NewJob {
+  /** Pick the id up front, e.g. to name the job's own output file (default: random). */
+  id?: string;
   userId: string;
   projectId?: string | null;
   kind: string;
@@ -23,6 +25,10 @@ export interface NewJob {
   freshOutput?: boolean;
   /** A local command (argv) instead of a claude run. Built server-side only. */
   exec?: string[];
+  /** Run only after this job is done (the runner fails it if that one fails). */
+  afterJobId?: string;
+  /** Work folder when it isn't the project folder (Write is allowed only there), e.g. a creator profile. */
+  workDir?: string;
 }
 
 export function ensureProjectDir(projectId: string) {
@@ -33,8 +39,8 @@ export function ensureProjectDir(projectId: string) {
 
 /** Queue a headless claude run; the agent runner picks it up. */
 export async function createJob(j: NewJob) {
-  const id = crypto.randomUUID().replace(/-/g, "").slice(0, 24);
-  const dir = j.projectId ? ensureProjectDir(j.projectId) : runnerDir();
+  const id = j.id ?? crypto.randomUUID().replace(/-/g, "").slice(0, 24);
+  const dir = j.workDir ? path.resolve(j.workDir) : j.projectId ? ensureProjectDir(j.projectId) : runnerDir();
   mkdirSync(path.join(dir, "jobs"), { recursive: true });
   if (j.freshOutput && j.outputFile) rmSync(path.join(dir, j.outputFile), { force: true });
   return prisma.agentJob.create({
@@ -51,6 +57,8 @@ export async function createJob(j: NewJob) {
       schema: j.schema ?? null,
       timeoutSec: j.timeoutSec ?? 900,
       exec: j.exec ? JSON.stringify(j.exec) : null,
+      workDir: j.workDir ?? null,
+      afterJobId: j.afterJobId ?? null,
       logPath: path.join(dir, "jobs", `${id}.ndjson`),
     },
   });
@@ -60,6 +68,20 @@ export async function createJob(j: NewJob) {
 export async function lastSession(projectId: string, kind: string) {
   const j = await prisma.agentJob.findFirst({
     where: { projectId, kind, status: "done" },
+    orderBy: { createdAt: "desc" },
+    select: { sessionId: true },
+  });
+  return j?.sessionId ?? null;
+}
+
+/**
+ * The project's one ongoing Claude conversation: chat instructions, the spoken-cut plan, its revisions and the
+ * style pass all resume the latest finished session among these kinds, so every step remembers the earlier ones.
+ */
+export const WORKFLOW_KINDS = ["chat", "plan", "style", "taste_rule"] as const;
+export async function projectSession(projectId: string) {
+  const j = await prisma.agentJob.findFirst({
+    where: { projectId, kind: { in: [...WORKFLOW_KINDS] }, status: "done" },
     orderBy: { createdAt: "desc" },
     select: { sessionId: true },
   });
@@ -100,6 +122,7 @@ export const jobDTO = (j: Awaited<ReturnType<typeof createJob>>) => ({
   fixAttempts: j.fixAttempts,
   sessionId: j.sessionId,
   outputFile: j.outputFile,
+  exec: Boolean(j.exec), // a local command job (no claude)
   createdAt: j.createdAt.toISOString(),
   startedAt: j.startedAt?.toISOString() ?? null,
   finishedAt: j.finishedAt?.toISOString() ?? null,

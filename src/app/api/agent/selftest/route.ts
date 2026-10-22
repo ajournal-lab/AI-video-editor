@@ -2,7 +2,7 @@ import { z } from "zod";
 import { prisma } from "@/server/db";
 import { createJob, jobDTO, timelineMediaFiles } from "@/server/agent";
 import { HttpError, ownedProject, requireUserId, route } from "@/server/http";
-import { fwd, rulesPath } from "@/agent/config";
+import { checklistPath, fwd, gotchasPath } from "@/agent/config";
 import type { Timeline } from "@/lib/timeline/types";
 
 const body = z.object({ projectId: z.string() });
@@ -32,14 +32,14 @@ export const POST = route(async (req: Request) => {
     timeoutSec: 600,
     prompt: `Self-check of the ReelSmith agent runner.
 
-1. Read ${fwd(rulesPath())}.
+1. Read ${fwd(checklistPath())} and ${fwd(gotchasPath())}.
 2. Run ffprobe on each media file below (one Bash call per file), for example:
    ffprobe -v error -show_entries format=duration:stream=codec_type,width,height,r_frame_rate -of json "<file>"
 3. Write media-check.json:
    { "files": [ { "name": file name, "path": absolute path with forward slashes, "kind": "video" | "audio" | "image",
                   "durationSec": number|null, "width": int|null, "height": int|null, "fps": number|null,
                   "hasAudio": boolean, "orientation": "vertical" | "horizontal" | "square" | null } ],
-     "summary": one or two sentences about the footage, then "rules.md: N rules loaded" }
+     "summary": one or two sentences about the footage, then "taste checklist: N rules, gotchas: M loaded" }
 
 Files:
 ${files.map((f) => `- ${fwd(f)}`).join("\n")}`,

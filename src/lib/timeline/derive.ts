@@ -17,7 +17,10 @@ import type {
   Track,
   VisualClip,
   FontId,
+  LookId,
+  TextClip,
 } from "./types";
+import { LOOKS } from "./lookdefs";
 
 export const clipEnd = (c: { start: number; duration: number }) => c.start + c.duration;
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -85,24 +88,31 @@ export const CAPTION_MAX_CHARS: Record<Timeline["aspect"], number> = { "9:16": 2
 export function captionLines(tl: Timeline): CaptionLine[] {
   const words = mappedWords(tl).filter((w) => w.text.length > 0);
   const maxChars = CAPTION_MAX_CHARS[tl.aspect];
+  const segs = lookSegments(tl);
   const lines: CaptionLine[] = [];
   let cur: TimedWord[] = [];
+  let curLook: LookId | null = null;
   const push = () => {
     if (cur.length) lines.push({ start: cur[0].start, end: cur[cur.length - 1].end, words: cur });
     cur = [];
   };
   for (const w of words) {
+    const look = segLookAt(segs, w.start);
     if (cur.length) {
       const last = cur[cur.length - 1];
       const chars = cur.reduce((n, x) => n + x.text.length + 1, 0) + w.text.length;
+      // kinetic captions (Bold look) show at most 3 words at a time; a line never spans two looks
+      const maxWords = look && LOOKS[look].captions === "kinetic" ? Math.min(3, tl.captions.maxWords) : tl.captions.maxWords;
       if (
         w.start - last.end > 0.6 ||
-        cur.length >= tl.captions.maxWords ||
+        cur.length >= maxWords ||
         chars > maxChars ||
+        look !== curLook ||
         /[.!?]["')\]]?$/.test(last.text)
       )
         push();
     }
+    if (!cur.length) curLook = look;
     cur.push(w);
   }
   push();
@@ -112,7 +122,106 @@ export function captionLines(tl: Timeline): CaptionLine[] {
     if (next && next.start - lines[i].end < 0.35) lines[i].end = next.start;
     else lines[i].end = next ? Math.min(lines[i].end + 0.2, next.start) : lines[i].end + 0.2;
   }
-  return lines;
+  // a look's punch line (a text clip) replaces the captions while it shows
+  const punch = punchClips(tl);
+  if (!punch.length) return lines;
+  return lines.filter((l) => {
+    const mid = (l.start + l.end) / 2;
+    return !punch.some((c) => mid >= c.start && mid < clipEnd(c));
+  });
+}
+
+export function punchClips(tl: Timeline): TextClip[] {
+  const out: TextClip[] = [];
+  for (const t of tl.tracks) if (t.kind === "text" && !t.hidden) for (const c of t.clips) if (c.role === "punch") out.push(c);
+  return out;
+}
+
+// ---------------------------------------------------------------- looks (sections -> segments)
+
+export interface LookSegment {
+  start: number;
+  end: number;
+  look: LookId | null;
+}
+const LOOK_PRIORITY = { script: 1, chat: 2, timeline: 3 } as const;
+
+/**
+ * The look at every moment: dragged (timeline) sections beat chat sections beat script cues where they overlap
+ * (a later section beats an earlier one of the same source); the project default fills the rest. Adjacent equal
+ * pieces are merged. Empty when the timeline has no looks. Mirrors look_segments() in worker/timeline.py.
+ */
+export function lookSegments(tl: Timeline): LookSegment[] {
+  const L = tl.looks;
+  if (!L || (!L.default && !L.sections.length)) return [];
+  const T = Math.max(timelineDuration(tl), ...L.sections.map((s) => s.end), 0.001);
+  const cuts = [...new Set([0, T, ...L.sections.flatMap((s) => [s.start, s.end])].filter((x) => x >= 0 && x <= T).map((x) => Math.round(x * 1000) / 1000))].sort((a, b) => a - b);
+  const out: LookSegment[] = [];
+  for (let i = 0; i < cuts.length - 1; i++) {
+    const a = cuts[i];
+    const b = cuts[i + 1];
+    if (b - a < 1e-4) continue;
+    const mid = (a + b) / 2;
+    let best: LookId | null = null;
+    let bp = 0;
+    L.sections.forEach((s) => {
+      if (mid < s.start || mid >= s.end) return;
+      const p = LOOK_PRIORITY[s.source] ?? 1;
+      if (p >= bp) [best, bp] = [s.look, p];
+    });
+    const look = best ?? L.default ?? null;
+    const last = out[out.length - 1];
+    if (last && last.look === look && Math.abs(last.end - a) < 1e-6) last.end = b;
+    else out.push({ start: a, end: b, look });
+  }
+  return out;
+}
+
+export function segLookAt(segs: LookSegment[], t: number): LookId | null {
+  for (const s of segs) if (t >= s.start && t < s.end) return s.look;
+  return segs.length && t >= segs[segs.length - 1].end ? segs[segs.length - 1].look : null;
+}
+
+/** The caption style at time t: the look's captions inside a look, else the project's caption style. */
+export function captionStyleAt(tl: Timeline, segs: LookSegment[], t: number): CaptionSettings["style"] {
+  const look = segLookAt(segs, t);
+  return look ? LOOKS[look].captions : tl.captions.style;
+}
+
+// Kinetic captions (Bold look): each line sits at the next anchor around the speaker, pops in, and its words appear
+// as they are spoken. Width is estimated (the same numbers as worker/timeline.py) so both sides shrink lines alike.
+export const KINETIC_ANCHORS: [number, number][] = [
+  [0.3, 0.36],
+  [0.7, 0.47],
+  [0.31, 0.58],
+  [0.69, 0.33],
+  [0.3, 0.48],
+  [0.7, 0.6],
+];
+export const KINETIC_MAX_W = 0.44; // of the frame width
+export const CAPTION_REVEAL = 0.1; // s: a word fading in as it is spoken
+export const CAPTION_POP = 0.15; // s: a kinetic line popping in
+export const CAPTION_POP_FROM = 0.8;
+const CHAR_W: Record<FontId, number> = { inter: 0.56, montserrat: 0.62, bebas: 0.4, playfair: 0.52, "playfair-italic": 0.48, marker: 0.58 };
+
+export function estTextWidth(text: string, font: FontId, px: number, spacing = 0, upper = false) {
+  return text.length * (CHAR_W[font] * (upper ? 1.12 : 1) * px + spacing);
+}
+
+/** Where kinetic line number `index` goes and how much it shrinks to fit beside the speaker. */
+export function kineticPlace(line: CaptionLine, index: number, look: CaptionLook, W: number) {
+  const [x, y] = KINETIC_ANCHORS[index % KINETIC_ANCHORS.length];
+  const text = line.words.map((w) => w.text).join(" ");
+  const est = estTextWidth(text, look.font, look.size, look.letterSpacing ?? 0, look.uppercase);
+  return { x, y, scale: Math.min(1, (KINETIC_MAX_W * W) / Math.max(1, est)) };
+}
+
+/** Index of each kinetic line among the kinetic lines (anchor cycling). */
+export function kineticIndex(lines: CaptionLine[], tl: Timeline, segs: LookSegment[]) {
+  const idx = new Map<CaptionLine, number>();
+  let n = 0;
+  for (const l of lines) if (captionStyleAt(tl, segs, l.start) === "kinetic") idx.set(l, n++);
+  return idx;
 }
 
 /** Index of the word being spoken in a line at time t (-1 before the first word). */
@@ -128,6 +237,13 @@ export interface CaptionLook {
   font: FontId;
   size: number;
   uppercase: boolean;
+  lowercase?: boolean;
+  letterSpacing?: number; // px
+  reveal?: boolean; // words appear as they are spoken (fade CAPTION_REVEAL)
+  lineFade?: number; // s: the whole line fades in
+  pop?: boolean; // the line pops in (CAPTION_POP_FROM -> 1 over CAPTION_POP)
+  y?: number; // fixed centre (fraction of the height) instead of captions.y
+  layout?: "line" | "kinetic";
   outline: number;
   outlineColor: string;
   shadow: number;
@@ -187,6 +303,67 @@ export const CAPTION_PRESETS: Record<CaptionSettings["style"], { label: string; 
       },
     }),
   },
+  kinetic: {
+    label: "Kinetic (Bold look)",
+    look: (size) => ({
+      font: "montserrat",
+      size: Math.round(size * 0.95),
+      uppercase: false,
+      lowercase: true,
+      outline: Math.round(size * 0.07),
+      outlineColor: "#000000",
+      shadow: 0,
+      box: null,
+      reveal: true,
+      pop: true,
+      layout: "kinetic",
+      word: {
+        past: { color: "#FFFFFF", opacity: 1 },
+        active: { color: "#FFFFFF", opacity: 1 },
+        future: { color: "#FFFFFF", opacity: 1 }, // hidden by reveal until spoken
+      },
+    }),
+  },
+  calm: {
+    label: "Calm (Cool girl look)",
+    look: (size) => ({
+      font: "inter",
+      size: Math.round(size * 0.62),
+      uppercase: false,
+      lowercase: true,
+      outline: 0,
+      outlineColor: "#000000",
+      shadow: 3,
+      box: null,
+      lineFade: 0.25,
+      y: 0.7,
+      word: {
+        past: { color: "#FFFFFF", opacity: 1 },
+        active: { color: "#FFFFFF", opacity: 1 },
+        future: { color: "#FFFFFF", opacity: 1 },
+      },
+    }),
+  },
+  editorial: {
+    label: "Editorial (Cool dude look)",
+    look: (size) => ({
+      font: "inter",
+      size: Math.round(size * 0.4),
+      uppercase: true,
+      letterSpacing: Math.round(size * 0.4 * 0.32),
+      outline: 0,
+      outlineColor: "#000000",
+      shadow: 2,
+      box: null,
+      lineFade: 0.2,
+      y: 0.78,
+      word: {
+        past: { color: "#FFFFFF", opacity: 0.92 },
+        active: { color: "#FFFFFF", opacity: 0.92 },
+        future: { color: "#FFFFFF", opacity: 0.92 },
+      },
+    }),
+  },
   boxed: {
     label: "Boxed",
     look: (size) => ({
@@ -230,6 +407,15 @@ export function speechIntervals(tl: Timeline): [number, number][] {
 }
 
 export const DUCK_RAMP = 0.25;
+
+// Audio safety (rules.md): music ducks under the voice by default; sound effects never duck, they are kept
+// sfxHeadroomDb below the voice instead (worker/audio_safety.py measures and turns down louder ones).
+export const AUDIO_DEFAULTS = { autoDuck: true, sfxHeadroomDb: 6 };
+export const audioSafety = (tl: Timeline) => ({ ...AUDIO_DEFAULTS, ...(tl.audio ?? {}) });
+/** Does this music-track clip duck under the voice? (worker/timeline.py clip_ducks) */
+export const clipDucks = (tl: Timeline, c: AudioClip) => !c.sfx && (c.duck ?? audioSafety(tl).autoDuck);
+/** Short sounds dropped on a music track count as sound effects. */
+export const SFX_MAX_SECONDS = 8;
 
 /** Ducking multiplier at timeline time t: duckLevel inside speech, 1 far from it, linear ramps. */
 export function duckGain(intervals: [number, number][], duckLevel: number, t: number) {
@@ -345,6 +531,9 @@ export const GRADE_LOOKS = {
     bgDesat: 0.25,
     vignette: 0.3,
   },
+  warm_soft: { label: "Warm Soft", contrast: 0.08, lift: 0.05, roll: 0.97, shadows: [0.02, 0.008, -0.012], highlights: [0.05, 0.02, -0.045], bgDesat: 0.08, vignette: 0.15 },
+  dark_editorial: { label: "Dark Editorial", contrast: 0.3, lift: 0.012, roll: 0.8, shadows: [-0.012, 0, 0.012], highlights: [0, 0, -0.012], bgDesat: 0.35, vignette: 0.6 },
+  editorial_subject: { label: "Editorial (speaker)", contrast: 0.22, lift: 0.02, roll: 0.99, shadows: [0, 0, 0.01], highlights: [0.02, 0.01, -0.01], bgDesat: 0.15, vignette: 0 },
 } as const satisfies Record<GradeLook, unknown>;
 export const GRADE_VIGNETTE = { r0: 0.45, r1: 1.05 };
 
@@ -397,6 +586,30 @@ export const smoothstep = (e0: number, e1: number, x: number) => {
   const t = clamp((x - e0) / (e1 - e0), 0, 1);
   return t * t * (3 - 2 * t);
 };
+
+// Sparkles around a text clip (style.sparkles, the Cool girl punch line): four-point stars at the corners of the
+// estimated text box that twinkle (triangle wave, half period SPARKLE_HALF s). worker/ass.py draws the same stars.
+export const SPARKLE_HALF = 0.45;
+export const SPARKLE_COLOR = "#FFF3B0";
+export const SPARKLES = [
+  { dx: -1, dy: -1, ox: -28, oy: -6, size: 34, phase: 0 },
+  { dx: 1, dy: -1, ox: 26, oy: 2, size: 24, phase: 1 },
+  { dx: 1, dy: 1, ox: 14, oy: 10, size: 28, phase: 0 },
+  { dx: -1, dy: 1, ox: -10, oy: 14, size: 20, phase: 1 },
+] as const;
+/** ASS drawing of the star (40 units across); the canvas traces the same path. */
+export const STAR_PATH = "m 0 -20 b 3 -3 3 -3 20 0 b 3 3 3 3 0 20 b -3 3 -3 3 -20 0 b -3 -3 -3 -3 0 -20";
+/** Twinkle level 0..1 of a star at `local` seconds into the clip. */
+export function sparkleLevel(local: number, phase: number) {
+  const u = Math.max(0, local) / SPARKLE_HALF + phase;
+  const k = Math.floor(u);
+  const f = u - k;
+  return k % 2 === 0 ? 1 - f : f;
+}
+export const sparkleAlpha = (v: number) => 0.25 + 0.75 * v;
+export const sparkleScale = (v: number) => 0.6 + 0.4 * v;
+/** Centre offsets (px) of the stars around a text box of half-size hw x hh. */
+export const sparkleSpots = (hw: number, hh: number) => SPARKLES.map((s) => ({ ...s, x: s.dx * hw + s.ox, y: s.dy * hh + s.oy }));
 
 export const TEXT_ANIM = 0.4;
 export const TEXT_SLIDE_PX = 60;

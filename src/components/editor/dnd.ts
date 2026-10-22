@@ -2,7 +2,7 @@
 
 import { useCallback } from "react";
 import { toast } from "sonner";
-import { findClip, timelineDuration } from "@/lib/timeline/derive";
+import { findClip, SFX_MAX_SECONDS, timelineDuration } from "@/lib/timeline/derive";
 import { newAudioClip, newTextClip, newVisualClip, TEXT_PRESETS } from "@/lib/timeline/factory";
 import { addClip, updateClip } from "@/lib/timeline/ops";
 import type { AnyClip, TrackKind, VisualClip } from "@/lib/timeline/types";
@@ -48,6 +48,8 @@ export function clipForAsset(a: AssetDTO, start: number): { clip: AnyClip; kind:
     };
   }
   const isMusic = a.type === "music";
+  // a short sound (or one tagged sfx) is a sound effect: never ducked, kept 6 dB under the voice (audio safety)
+  const sfx = isMusic && ((a.duration ?? Infinity) <= SFX_MAX_SECONDS || a.tags?.includes("sfx"));
   const remaining = Math.max(5, timelineDuration(tl) - start);
   return {
     kind: isMusic ? "music" : "voice",
@@ -58,9 +60,10 @@ export function clipForAsset(a: AssetDTO, start: number): { clip: AnyClip; kind:
       start,
       duration: Math.min(a.duration ?? remaining, isMusic ? remaining : Infinity),
       srcDuration: a.duration,
-      volume: isMusic ? 0.5 : 1,
-      duck: isMusic,
-      fadeOut: isMusic ? 1.5 : 0,
+      volume: sfx ? 0.6 : isMusic ? 0.5 : 1,
+      duck: sfx ? false : isMusic,
+      sfx: sfx || undefined,
+      fadeOut: isMusic && !sfx ? 1.5 : 0,
     }),
   };
 }

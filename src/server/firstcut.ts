@@ -5,6 +5,7 @@ import type { Aspect, Timeline, VisualClip, VoiceTrack as VoiceTrackT, VideoTrac
 import { prisma } from "./db";
 import { splitScenes } from "./scenes";
 import { clipFromAsset, pickVisual, scoreAsset } from "./visuals";
+import { withClientLook } from "./looks";
 
 type Transcript = { words: Word[]; duration?: number; language?: string };
 
@@ -93,6 +94,7 @@ export async function buildFirstCut(projectId: string) {
   }
 
   const firstThumb = visuals.find((v) => v.thumb)?.thumb ?? null;
+  await withClientLook(project.userId, tl); // the client's default look (brand kit); the editor builds it
   const json = tl as unknown as Prisma.InputJsonValue;
   await prisma.$transaction([
     prisma.timeline.upsert({

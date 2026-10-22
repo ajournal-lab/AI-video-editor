@@ -2,16 +2,32 @@ import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/server/db";
 import { HttpError, ownedProject, requireUserId, route, type Ctx } from "@/server/http";
+import { backfillNumbers } from "@/server/renders";
 import { assertTimeline } from "@/server/validate";
 
 export const GET = route(async (_req: Request, ctx: Ctx<{ id: string }>) => {
   const userId = await requireUserId();
   const { id } = await ctx.params;
   await ownedProject(id, userId);
+  await backfillNumbers(id);
   const versions = await prisma.timelineVersion.findMany({
     where: { projectId: id },
     orderBy: { createdAt: "desc" },
-    select: { id: true, name: true, kind: true, createdAt: true, _count: { select: { renders: true } } },
+    select: {
+      id: true,
+      name: true,
+      kind: true,
+      number: true,
+      notes: true,
+      createdAt: true,
+      _count: { select: { renders: true } },
+      // the newest render of each version: its phone preview, full export and thumbnail
+      renders: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: { id: true, status: true, progress: true, step: true, quality: true, outputUrl: true, previewUrl: true, thumbUrl: true, duration: true, finishedAt: true },
+      },
+    },
   });
   return { versions };
 });

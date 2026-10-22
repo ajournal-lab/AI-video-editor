@@ -1,11 +1,13 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Clapperboard, FileAudio, ImagePlus, Loader2, Mic, Music2, Scissors, Sparkles, Upload, Users, X, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/client/api";
 import { uploadAsset, uploadFile, type AssetDTO } from "@/lib/client/upload";
+import { LinkImport } from "@/components/media/LinkImport";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -91,20 +93,29 @@ function useUploads() {
       setByRole((m) => ({ ...m, [role]: [...(many ? (m[role] ?? []) : []), { key, name: f.name, progress: 0, preview }] }));
       const patch = (fn: (u: Upload) => Upload) => setByRole((m) => ({ ...m, [role]: (m[role] ?? []).map((u) => (u.key === key ? fn(u) : u)) }));
       uploadAsset(f, music ? "music" : "auto", (p) => patch((u) => ({ ...u, progress: p })))
-        .then((asset) => patch((u) => ({ ...u, asset, progress: 1 })))
+        .then((asset) => {
+          if (asset.duplicate) toast.info(`${f.name}: already in your library, using “${asset.name}”`);
+          patch((u) => ({ ...u, asset, progress: 1 }));
+        })
         .catch((e) => {
           toast.error(`${f.name}: ${(e as Error).message}`);
           setByRole((m) => ({ ...m, [role]: (m[role] ?? []).filter((u) => u.key !== key) }));
         });
     }
   };
+  /** A library asset (e.g. imported from a link) straight into a role; the same asset is never listed twice. */
+  const addAsset = (role: string, asset: AssetDTO, many: boolean) =>
+    setByRole((m) => {
+      const cur = (many ? (m[role] ?? []) : []).filter((u) => u.asset?.id !== asset.id);
+      return { ...m, [role]: [...cur, { key: Math.random(), name: asset.name, progress: 1, asset }] };
+    });
   const remove = (role: string, key: number) => setByRole((m) => ({ ...m, [role]: (m[role] ?? []).filter((u) => u.key !== key) }));
   const ids = (role: string) => (byRole[role] ?? []).map((u) => u.asset?.id).filter(Boolean) as string[];
   const uploading = Object.values(byRole).some((l) => l.some((u) => !u.asset));
-  return { byRole, add, remove, ids, uploading, reset: () => setByRole({}) };
+  return { byRole, add, addAsset, remove, ids, uploading, reset: () => setByRole({}) };
 }
 
-function DropZone({ role, uploads, onAdd, onRemove }: { role: Role; uploads: Upload[]; onAdd: (files: File[]) => void; onRemove: (key: number) => void }) {
+function DropZone({ role, uploads, onAdd, onAddAsset, onRemove }: { role: Role; uploads: Upload[]; onAdd: (files: File[]) => void; onAddAsset: (a: AssetDTO) => void; onRemove: (key: number) => void }) {
   const ref = useRef<HTMLInputElement>(null);
   return (
     <div className="space-y-2">
@@ -151,7 +162,8 @@ function DropZone({ role, uploads, onAdd, onRemove }: { role: Role; uploads: Upl
             </button>
           )}
         </div>
-        <p className="mt-2 text-xs text-muted-foreground">{role.hint}. Drop files here or click Add.</p>
+        <p className="mt-2 text-xs text-muted-foreground">{role.hint}. Drop files here, click Add, or paste a link.</p>
+        {(role.many || uploads.length === 0) && <LinkImport compact className="mt-2" onImported={onAddAsset} />}
         <input ref={ref} type="file" multiple={role.many} accept={role.accept} className="hidden" onChange={(e) => (onAdd([...(e.target.files ?? [])]), (e.target.value = ""))} />
       </div>
     </div>
@@ -171,6 +183,14 @@ export function NewProject() {
   const [lookIntensity, setLookIntensity] = useState(DEFAULT_GRADE_INTENSITY);
   const [count, setCount] = useState(3);
   const [quick, setQuick] = useState(false); // voiceover: the instant first cut without Claude
+  const [inChat, setInChat] = useState(false); // open on the chat; the first message starts the cut
+  const [creator, setCreator] = useState(""); // a creator profile's style (Creators page)
+  const [creators, setCreators] = useState<{ handle: string; status: string; summary: string | null }[]>([]);
+  useEffect(() => {
+    api<{ creators: { handle: string; status: string; summary: string | null }[] }>("/api/creators")
+      .then((r) => setCreators(r.creators.filter((c) => c.status === "ready")))
+      .catch(() => {});
+  }, []);
   const [voiceTab, setVoiceTab] = useState("upload");
   const [recording, setRecording] = useState<Blob | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -190,7 +210,7 @@ export function NewProject() {
         setBusy("Uploading the recording…");
         voice = [(await uploadAsset(recordedFile, "music")).id];
       }
-      setBusy(hasMusic && musicUrl.trim() && !up.ids("music").length ? "Downloading the sound…" : "Starting Claude…");
+      setBusy(hasMusic && musicUrl.trim() && !up.ids("music").length ? "Downloading the sound…" : inChat ? "Creating…" : "Starting Claude…");
       const assets = Object.fromEntries(m.roles.map((r) => [r.id, r.id === "voice" ? voice : up.ids(r.id)]));
       const { project } = await api<{ project: { id: string } }>("/api/projects", {
         method: "POST",
@@ -198,6 +218,7 @@ export function NewProject() {
           title: title.trim() || undefined,
           aspect,
           mode,
+          startInChat: inChat,
           inputs: {
             assets,
             notes: notes.trim() || undefined,
@@ -206,6 +227,7 @@ export function NewProject() {
             faceCutbacks: mode === "voiceover_broll" ? faceCutbacks : undefined,
             count: mode === "auto_clip" ? count : undefined,
             grade: (mode === "talking_head" || mode === "best_take") && look !== "none" ? { look, intensity: lookIntensity } : undefined,
+            creator: creator || undefined,
           },
         },
       });
@@ -283,7 +305,7 @@ export function NewProject() {
                   </TabsTrigger>
                 </TabsList>
                 <TabsContent value="upload">
-                  <DropZone role={r} uploads={up.byRole[r.id] ?? []} onAdd={(f) => up.add(r.id, f, false, f[0]?.type.startsWith("audio/"))} onRemove={(k) => up.remove(r.id, k)} />
+                  <DropZone role={r} uploads={up.byRole[r.id] ?? []} onAdd={(f) => up.add(r.id, f, false, f[0]?.type.startsWith("audio/"))} onAddAsset={(a) => up.addAsset(r.id, a, false)} onRemove={(k) => up.remove(r.id, k)} />
                 </TabsContent>
                 <TabsContent value="record">
                   <Recorder onRecorded={setRecording} />
@@ -291,7 +313,7 @@ export function NewProject() {
               </Tabs>
             </div>
           ) : (
-            <DropZone key={r.id} role={r} uploads={up.byRole[r.id] ?? []} onAdd={(f) => up.add(r.id, f, r.many, r.accept === "audio/*")} onRemove={(k) => up.remove(r.id, k)} />
+            <DropZone key={r.id} role={r} uploads={up.byRole[r.id] ?? []} onAdd={(f) => up.add(r.id, f, r.many, r.accept === "audio/*")} onAddAsset={(a) => up.addAsset(r.id, a, r.many)} onRemove={(k) => up.remove(r.id, k)} />
           ),
         )}
 
@@ -367,6 +389,39 @@ export function NewProject() {
           </div>
         )}
         {!(mode === "voiceover_broll" && quick) && (
+          <div className="space-y-2 rounded-xl border p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+              <span>
+                Creator style
+                <span className="block text-xs text-muted-foreground">Edit in the style of a creator you analysed on the Creators page. Your taste rules still win.</span>
+              </span>
+              <select value={creator} onChange={(e) => setCreator(e.target.value)} className="h-9 min-w-44 rounded-md border bg-transparent px-2 text-sm">
+                <option value="">None</option>
+                {creators.map((c) => (
+                  <option key={c.handle} value={c.handle}>
+                    @{c.handle}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {creator && <p className="text-xs text-muted-foreground">{creators.find((c) => c.handle === creator)?.summary}</p>}
+            {!creators.length && (
+              <p className="text-xs text-muted-foreground">
+                No profiles yet: <Link href="/creators/new" className="underline">analyse a creator</Link>.
+              </p>
+            )}
+          </div>
+        )}
+        {!(mode === "voiceover_broll" && quick) && (
+          <label className="flex items-center justify-between gap-3 rounded-xl border p-3 text-sm">
+            <span>
+              Start in the chat
+              <span className="block text-xs text-muted-foreground">Open the project on its chat and describe the reel (“30s, style of @creator, cut the pauses, punchy zooms”). Your first message starts the cut.</span>
+            </span>
+            <Switch checked={inChat} onCheckedChange={setInChat} />
+          </label>
+        )}
+        {!(mode === "voiceover_broll" && quick) && !inChat && (
           <div className="space-y-2">
             <Label htmlFor="notes">Brief for Claude (optional)</Label>
             <Textarea

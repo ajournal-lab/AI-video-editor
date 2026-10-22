@@ -1,6 +1,6 @@
 "use client";
 
-import { adjacentPrev, clamp, clipEnd, duckGain, fadeGain, keyframeGain, speechIntervals } from "@/lib/timeline/derive";
+import { adjacentPrev, clamp, clipDucks, clipEnd, duckGain, fadeGain, keyframeGain, speechIntervals } from "@/lib/timeline/derive";
 import type { AudioClip, Timeline, VisualClip } from "@/lib/timeline/types";
 import type { FrameSource } from "./draw";
 
@@ -129,7 +129,7 @@ export class MediaPool implements FrameSource {
           let gain = c.volume * fadeGain(c, t);
           if (track.kind === "music") {
             gain *= keyframeGain(c, t - c.start);
-            if (c.duck) gain *= duckGain(intervals(tl), tl.duckLevel, t);
+            if (clipDucks(tl, c)) gain *= duckGain(intervals(tl), tl.duckLevel, t);
           }
           a.volume = clamp(gain, 0, 1);
           a.muted = Boolean(track.muted || c.muted);

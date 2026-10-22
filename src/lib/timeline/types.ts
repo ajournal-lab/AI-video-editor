@@ -16,10 +16,11 @@ export const DESIGN_SIZE: Record<Aspect, { width: number; height: number }> = {
 export type TransitionType = "cut" | "crossfade" | "slide" | "zoom" | "flash";
 export type FilterPreset = "none" | "warm" | "cool" | "bw";
 export type KenBurnsDirection = "in" | "out" | "left" | "right" | "up" | "down";
-export type FontId = "inter" | "montserrat" | "bebas" | "playfair" | "marker";
+export type FontId = "inter" | "montserrat" | "bebas" | "playfair" | "playfair-italic" | "marker";
 export type TextAnimIn = "none" | "fade" | "slide-up" | "pop";
 export type TextAnimOut = "none" | "fade" | "slide-down" | "pop";
-export type CaptionStyle = "bold" | "karaoke" | "minimal" | "boxed";
+// kinetic / calm / editorial are the captions of the Bold / Cool girl / Cool dude looks (src/lib/timeline/looks.ts)
+export type CaptionStyle = "bold" | "karaoke" | "minimal" | "boxed" | "kinetic" | "calm" | "editorial";
 
 // Per-clip enhancement (worker/enhance.py applies it before the final encode; see that file's docstring).
 // Proposed by the Enhance analysis job, toggled per fix in the Enhance panel.
@@ -92,6 +93,42 @@ export interface VisualClip extends ClipBase {
   enhance?: Enhance | null;
   grade?: Grade | null; // applied after Enhance and the clip's filters
   matte?: Matte | null; // background swap: the person is kept, the rest shows the tracks below (e.g. a background image)
+  // Looks (src/lib/timeline/looks.ts): "look" = made by applyLooks and replaced whenever the looks are applied again
+  gen?: "look" | null;
+  cutout?: boolean; // a person cut-out copy (Cut-out track): drawn only once its matte is on
+  lookOrig?: { grade: Grade | null; transform: Transform } | null; // the clip before a look changed its grade / crop
+  lookCrop?: "wide" | "close" | null;
+  insert?: InsertRef | null; // an animated insert (worker/inserts.py); src comes from its InsertJob once built
+}
+
+// ---------------------------------------------------------------- inserts
+// Built in the background by the worker (InsertJob, one per spec hash) as full-frame transparent VP9 webm.
+export type InsertKind = "app_screen" | "follow_cta" | "scroll_file" | "ui_demo" | "orbit";
+export interface InsertTap {
+  t: number; // seconds from the insert start
+  x: number; // 0..1 of the screenshot
+  y: number;
+}
+export interface InsertSpec {
+  kind: InsertKind;
+  duration: number;
+  width: number;
+  height: number;
+  fps: number;
+  src?: string | null; // app_screen / scroll_file / ui_demo: the screenshot or screen recording
+  srcType?: "image" | "video" | null;
+  handle?: string | null; // follow_cta
+  name?: string | null; // follow_cta display name
+  avatar?: string | null; // follow_cta avatar image
+  taps?: InsertTap[] | null; // ui_demo
+  title?: string | null; // scroll_file header
+  sources?: string[] | null; // orbit: the user's own reels
+}
+export interface InsertRef {
+  kind: InsertKind;
+  hash: string;
+  spec: InsertSpec;
+  layer?: "back" | "front" | null; // orbit: the part behind / in front of the speaker
 }
 
 // Person matte (worker/matte.py, Robust Video Matting on the CPU): a separate lossless video, white = person, of the
@@ -106,7 +143,8 @@ export interface Matte {
 }
 
 // Cinematic looks (worker/grade.py renders them; derive.ts gradeTables/vignette mirror it for the preview).
-export type GradeLook = "cinematic_warm";
+// warm_soft = Cool girl, dark_editorial (+ editorial_subject on the cut-out: "I stay lit") = Cool dude
+export type GradeLook = "cinematic_warm" | "warm_soft" | "dark_editorial" | "editorial_subject";
 export interface Grade {
   look: GradeLook;
   intensity: number; // 0..1
@@ -129,7 +167,8 @@ export interface AudioClip extends ClipBase {
   muted: boolean;
   fadeIn: number;
   fadeOut: number;
-  duck?: boolean; // music: lower under the voice
+  duck?: boolean; // music: lower under the voice (with audio.autoDuck every music clip ducks unless this is false)
+  sfx?: boolean; // a sound effect: never ducked, kept at least audio.sfxHeadroomDb below the voice
   keyframes?: VolumeKeyframe[]; // music: volume automation (multiplies volume)
   // music cut from a pasted link (Music panel): where it came from and which part of the sound was used, so the
   // same section can be picked in Instagram. start/end = seconds of the original sound (= in .. in + duration*speed)
@@ -138,7 +177,7 @@ export interface AudioClip extends ClipBase {
 
 export interface AudioLink {
   url: string;
-  kind: "instagram" | "youtube" | "direct";
+  kind: "instagram" | "youtube" | "tiktok" | "vimeo" | "x" | "drive" | "direct";
   start: number;
   end: number;
 }
@@ -154,6 +193,8 @@ export interface TextStyle {
   uppercase: boolean;
   x: number; // center, fraction of frame width (0..1)
   y: number; // center, fraction of frame height (0..1)
+  letterSpacing?: number; // px between letters (design resolution)
+  sparkles?: boolean; // twinkling four-point stars around the text (Cool girl punch line)
 }
 
 export interface TextClip extends ClipBase {
@@ -163,6 +204,8 @@ export interface TextClip extends ClipBase {
   style: TextStyle;
   animIn: TextAnimIn;
   animOut: TextAnimOut;
+  gen?: "look" | null; // made by applyLooks
+  role?: "punch" | "big" | null; // punch: captions step aside while it shows
 }
 
 export type TrackKind = "video" | "voice" | "music" | "text" | "captions";
@@ -170,6 +213,7 @@ export type TrackKind = "video" | "voice" | "music" | "text" | "captions";
 interface TrackBase {
   id: string;
   name: string;
+  role?: "cutout" | "look" | "inserts" | null; // tracks the looks / inserts manage
   muted?: boolean;
   hidden?: boolean;
   locked?: boolean;
@@ -189,6 +233,7 @@ export interface MusicTrack extends TrackBase {
 export interface TextTrack extends TrackBase {
   kind: "text";
   clips: TextClip[];
+  behind?: boolean; // drawn at its place among the video tracks (under the Cut-out track: words behind the speaker)
 }
 // Captions are derived from the voice clips + transcripts, so they follow every trim.
 export interface CaptionsTrack extends TrackBase {
@@ -237,4 +282,33 @@ export interface Timeline {
   captions: CaptionSettings;
   duckLevel: number; // music gain while the voice speaks (0..1)
   fx?: BeatFx[]; // beat effects (src/lib/timeline/beatfx.ts generates them from the music's beats)
+  looks?: Looks | null;
+  audio?: AudioSafety | null;
+}
+
+// ---------------------------------------------------------------- looks
+export type LookId = "bold" | "cool_girl" | "cool_dude";
+export interface LookSection {
+  id: string;
+  start: number; // timeline seconds
+  end: number;
+  look: LookId;
+  source: "script" | "chat" | "timeline"; // timeline (dragged) beats chat beats script where they overlap
+  cue?: string | null; // script: the words that switched it ("cool girl aesthetic"); chat: the phrase
+}
+export interface Looks {
+  default: LookId | null; // the project's look outside the sections (initialised from the brand kit)
+  sections: LookSection[];
+  autoScript: boolean; // detect "cool girl aesthetic" etc. in the transcript when applying
+  softCloseups?: boolean; // Cool dude: allow close-ups that upscale the source
+  orbitSources?: string[] | null; // Cool girl: the reels that orbit the speaker (default: the user's latest renders)
+  punchWords?: string[]; // transcript word ids drawn in the punch colour (set by applyLooks)
+  applied?: string | null; // hash of the base timeline + looks the generated content was made from
+  notes?: string[]; // what applyLooks did or skipped (shown in the Looks panel)
+}
+
+// Audio safety (worker/audio_safety.py): music ducks under the voice; every sound effect stays sfxHeadroomDb below it.
+export interface AudioSafety {
+  autoDuck: boolean;
+  sfxHeadroomDb: number;
 }
