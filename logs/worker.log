@@ -1,0 +1,1 @@
+﻿[worker] storage=local poll=2.0s inserts<=2 parallel

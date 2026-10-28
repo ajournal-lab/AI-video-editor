@@ -1,0 +1,329 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Postgres everywhere: docker-compose locally, Neon in production.
+// The Python worker (worker/db.py) reads/writes VoiceTrack, RenderJob, MediaAsset,
+// Project and TimelineVersion with raw SQL, so renaming columns here means updating it too.
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String       @id @default(cuid())
+  email        String       @unique
+  name         String?
+  passwordHash String
+  createdAt    DateTime     @default(now())
+  // Settings page: brand kit, cloud render (off by default), phone link token. src/server/settings.ts
+  settings     Json?
+  projects     Project[]
+  assets       MediaAsset[]
+  renders      RenderJob[]
+  agentJobs    AgentJob[]
+  chat         ChatMessage[]
+  cloudRenders CloudRender[]
+}
+
+model Project {
+  id            String            @id @default(cuid())
+  userId        String
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title         String
+  aspect        String            @default("9:16") // "9:16" | "16:9" | "1:1"
+  // draft -> transcribing -> transcribed -> building -> ready -> rendered; or failed
+  // edit modes: planning -> review (-> planning on feedback) -> ready; plan_failed
+  status        String            @default("draft")
+  statusMessage String?
+  thumbnailUrl  String?
+  duration      Float             @default(0)
+  isSample      Boolean           @default(false)
+  // voice = the voice-first auto first cut; the edit modes plan with Claude first (src/server/modes.ts):
+  // music | talking_head | best_take | voiceover_broll | auto_clip
+  mode          String            @default("voice")
+  inputs        Json? // edit modes: { [role]: assetId | assetId[], options } chosen on the new-edit page
+  plan          Json? // edit modes: the current plan.json (as the user edited it); status planning -> review -> ready
+  planJobId     String?
+  parentId      String? // auto-clip: the long-video project a short was cut from
+  prompt        String? // the idea or script text for idea/script projects
+  // Where scene visuals come from after the user's own media:
+  // auto = library -> stock -> AI images; ai = AI images; stock = library -> stock
+  visualMode    String            @default("auto")
+  assetIds      String[] // photos/videos the user attached to this project (used first)
+  buildStartedAt DateTime?
+  // two-stage approval (src/server/pipeline.ts): { stage, creator, brief, styleJobId, stillsJobId, stills, conflicts, ... }
+  pipeline      Json?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  voice         VoiceTrack?
+  timeline      Timeline?
+  versions      TimelineVersion[]
+  renders       RenderJob[]
+  agentJobs     AgentJob[]
+  chat          ChatMessage[]
+  cloudRenders  CloudRender[]
+  inserts       InsertJob[]
+  ruleHits      RuleHit[]
+  ruleChecks    RuleCheck[]
+
+  @@index([userId, updatedAt])
+}
+
+model VoiceTrack {
+  id             String    @id @default(cuid())
+  projectId      String    @unique
+  project        Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  assetId        String?
+  url            String
+  duration       Float?
+  language       String?
+  transcriptJson Json? // { language, duration, words: [{ id, text, start, end }] }
+  status         String    @default("queued") // queued | processing | done | failed
+  error          String?
+  attempts       Int       @default(0)
+  lockedAt       DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model Timeline {
+  id        String   @id @default(cuid())
+  projectId String   @unique
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  json      Json
+  revision  Int      @default(1)
+  updatedAt DateTime @updatedAt
+}
+
+model TimelineVersion {
+  id        String      @id @default(cuid())
+  projectId String
+  project   Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  kind      String      @default("manual") // manual | render | first-cut | before-restore
+  // render versions are numbered per project (v1, v2, ...); notes = what changed since the previous one (editable)
+  number    Int?
+  notes     String?
+  json      Json
+  createdAt DateTime    @default(now())
+  renders   RenderJob[]
+
+  @@index([projectId, createdAt])
+}
+
+model MediaAsset {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // video | image | audio (voice) | music
+  source    String   @default("upload") // upload | recording | pexels | sample
+  key       String? // storage key when we host the file
+  url       String
+  thumbUrl  String?
+  name      String
+  mime      String?
+  duration  Float?
+  width     Int?
+  height    Int?
+  tags      String[]
+  meta      Json? // { peaks, peaksPerSec, pexelsId, author, hasAudio, link: { url, kind }, uploader }
+  // sha256 of the stored file: an identical upload or link import reuses the existing asset
+  hash      String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, type, createdAt])
+  @@index([userId, hash])
+}
+
+model RenderJob {
+  id         String          @id @default(cuid())
+  projectId  String
+  project    Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  versionId  String
+  version    TimelineVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  userId     String
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quality    String          @default("1080p") // 720p | 1080p
+  status     String          @default("queued") // queued | processing | done | failed
+  progress   Float           @default(0)
+  outputUrl  String?
+  outputKey  String?
+  thumbUrl   String?
+  // phone preview: 720p, low bitrate, written right after the export (before the quality check finishes)
+  previewUrl String?
+  previewKey String?
+  step       String? // what the render is doing now, e.g. "Waiting for 2 inserts"
+  duration   Float?
+  error      String?
+  // checks on the exported file (worker/audio_master.py: loudness, true peak, clipping)
+  report     Json?
+  attempts   Int             @default(0)
+  lockedAt   DateTime?
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime        @default(now())
+
+  @@index([status, createdAt])
+  @@index([projectId, createdAt])
+}
+
+// One headless `claude -p` run (or a resumed turn of one). The agent runner
+// (agent/runner.ts) claims queued rows one at a time; the full stream-json log is
+// written to logPath, and structured results to outputFile in the project folder.
+model AgentJob {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId       String?
+  project         Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  kind            String // selftest | ai_edit | enhance | upscale | ...
+  exec            String? // JSON argv: a local command job (no claude), e.g. a Real-ESRGAN upscale
+  title           String
+  status          String    @default("queued") // queued | running | done | failed | cancelled
+  prompt          String
+  sessionId       String // claude session id: new sessions use --session-id, resumed ones --resume
+  resume          Boolean   @default(false)
+  outputFile      String? // relative to the project folder, e.g. "media-check.json"
+  schema          String? // schema name in src/agent/schemas.ts
+  timeoutSec      Int       @default(900)
+  cancelRequested Boolean   @default(false)
+  pid             Int?
+  error           String?
+  resultText      String?
+  costUsd         Float? // claude's usage estimate; not billed on a subscription
+  turns           Int?
+  fixAttempts     Int       @default(0)
+  logPath         String
+  // folder the run works in (Write allowed there) when it isn't a project, e.g. creator-profiles/<handle>
+  workDir         String?
+  // run only after this job is done (e.g. teardown: measure -> Claude analysis); fails if that one fails
+  afterJobId      String?
+  createdAt       DateTime  @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+
+  @@index([status, createdAt])
+  @@index([projectId, createdAt])
+}
+
+// The per-project chat (src/server/chat.ts). user = what was typed, assistant = Claude's reply (+ actions it
+// started in data), step = a workflow job the chat queued (plan / style / stills / render / teardown).
+model ChatMessage {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      String // user | assistant | step | system
+  text      String
+  jobId     String?
+  data      Json?
+  createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+}
+
+// "Render in cloud" (GitHub Actions, src/server/cloud.ts + agent/cloud-render.ts). Off unless enabled in Settings,
+// and every run needs the user's click + confirmation (a one-time token from /prepare).
+model CloudRender {
+  id          String    @id @default(cuid())
+  projectId   String
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  versionId   String
+  quality     String    @default("1080p")
+  repo        String // owner/name, verified private before every upload
+  branch      String
+  keep        Boolean   @default(false) // keep the uploaded media + artifact afterwards
+  // prepared -> uploading -> queued -> running -> downloading -> cleaning -> done | failed | cancelled
+  status      String    @default("prepared")
+  // sha256 of the one-time token /prepare hands to the confirmation dialog; /start needs it (15 min)
+  confirmHash String?
+  step        String?
+  progress    Float     @default(0)
+  bundleDir   String?
+  bundleBytes Float?
+  runId       String?
+  runUrl      String?
+  artifactId  String?
+  renderJobId String? // the RenderJob row the downloaded video lands in
+  agentJobId  String?
+  minutes     Json? // { used, included, remaining } when GitHub reports it
+  cleanedUp   Boolean   @default(false)
+  error       String?
+  createdAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  @@index([projectId, createdAt])
+}
+
+// Animated inserts (worker/inserts.py): app screen behind the speaker, follow CTA, scrolling file, UI demo, reels orbiting
+// the speaker. Built by the worker's insert pool (worker/main.py) in parallel with renders: up to 2 at a time, 1 while the
+// CPU is busy. One row per (project, spec hash); timeline clips point at it with clip.insert.hash.
+model InsertJob {
+  id         String    @id @default(cuid())
+  projectId  String
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId     String
+  hash       String
+  kind       String // app_screen | follow_cta | scroll_file | ui_demo | orbit
+  spec       Json
+  status     String    @default("queued") // queued | processing | done | failed
+  progress   Float     @default(0)
+  outputUrl  String? // transparent VP9 webm, full frame
+  frontUrl   String? // orbit: the layer in front of the speaker
+  note       String? // e.g. "waiting: CPU busy, building one at a time"
+  error      String?
+  attempts   Int       @default(0)
+  lockedAt   DateTime?
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@unique([projectId, hash])
+  @@index([status, createdAt])
+}
+
+// Which videos a taste-checklist rule touched (the Rules page): added = the rule came from a note in this project,
+// reinforced = a note here repeated it, violated / fixed / warned = the fresh checker's finding on a draft here,
+// conflict = a note here contradicted it, replaced = a newer rule from here replaced it. ruleId is "R12" (the file is the source).
+model RuleHit {
+  id        String   @id @default(cuid())
+  ruleId    String
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  kind      String // added | reinforced | violated | fixed | warned | conflict | replaced
+  note      String?
+  checkId   String?
+  jobId     String?
+  createdAt DateTime @default(now())
+
+  @@index([ruleId, createdAt])
+  @@index([projectId, createdAt])
+}
+
+// Taste checklist R5: a fresh Claude session (not the one that made the edit) checks a draft against every active rule
+// before the user sees it: the spoken cut (target "cut", subject = the plan job) or the key stills ("stills", subject = the
+// stills job). Failures go back to the project's session to fix (fixJobId), then the draft is shown with the report.
+model RuleCheck {
+  id           String    @id @default(cuid())
+  projectId    String
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  target       String // cut | stills
+  subjectJobId String
+  jobId        String // the checker run
+  fixJobId     String?
+  status       String    @default("checking") // checking | fixing | done | failed
+  report       Json? // checks/<id>.json: {summary, findings, passed, notApplicable}
+  fixed        Json? // [{rule, what}] from the fix turn
+  note         String?
+  createdAt    DateTime  @default(now())
+  finishedAt   DateTime?
+
+  @@index([projectId, createdAt])
+  @@index([subjectJobId])
+}

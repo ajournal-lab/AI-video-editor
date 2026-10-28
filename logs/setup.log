@@ -1,0 +1,128 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261009131829
+Username: DESKTOP-0LHPJA8\Admin
+RunAs User: DESKTOP-0LHPJA8\Admin
+Configuration Name: 
+Machine: DESKTOP-0LHPJA8 (Microsoft Windows NT 10.0.26300.0)
+Host Application: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -CheckOnly
+Process ID: 19320
+PSVersion: 5.1.26100.9549
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9549
+BuildVersion: 10.0.26100.9549
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+ReelSmith setup  (C:\Users\Admin\reelsmith)
+Check-only mode: nothing will be installed or changed.
+
+== .env and folders
+  [PASS] Folders - workspace D:/reel-studio, style D:/my-project/style, storage C:/Users/Admin/reelsmith/storage
+
+== Node.js 22+
+  [PASS] Node.js - v24.12.0
+
+== Git
+  [PASS] Git - 2.51.2.windows.1
+
+== Python 3.11+
+  [PASS] Python - Python 3.13.7 (C:\Users\Admin\AppData\Local\Programs\Python\Python313\python.exe)
+
+== ffmpeg
+  [PASS] ffmpeg - 9.0.2-full_build-www.gyan.dev (vidstab, vmaf, zscale, libass)
+
+== Python packages (worker\.venv)
+  [FAIL] Python packages - ModuleNotFoundError: No module named 'yt_dlp' (run setup without -CheckOnly, or: worker\.venv\Scripts\pip install -r workerequirements.txt)
+
+== npm packages
+  [PASS] npm packages - installed, Prisma client generated
+
+== Claude workspace (rules.md, CLAUDE.md, tools, skills)
+  [PASS] Workspace files - rules.md, CLAUDE.md, tools, edit-reel skill
+  [PASS] video-use skill - commit b877063
+
+== HyperFrames
+  [PASS] HyperFrames - v0.8.143 (cached for npx)
+
+== Whisper model
+  [PASS] Whisper model - 'base' in the Hugging Face cache
+
+== Background-matte model
+  [PASS] Matte model - rvm_mobilenetv3_fp32.onnx
+
+== Real-ESRGAN
+  [WARN] Real-ESRGAN - not installed; AI upscale is unavailable (everything else works)
+
+== PostgreSQL
+node.exe : ΓöîΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓ
+öÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÉ
+At C:\Program Files\nodejs\npx.ps1:28 char:12
++   $input | & $NODE_EXE $NPX_CLI_JS $args
++            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (ΓöîΓöÇΓöÇΓöÇΓöÇ...ΓöÇΓöÇΓöÇΓöÇΓöÉ:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+Γöé  Update available 6.19.3 -> 8.0.0-rc.22                 Γöé
+Γöé                                                         Γöé
+Γöé  This is a major update - please follow the guide at    Γöé
+Γöé  https://pris.ly/d/major-version-upgrade                Γöé
+Γöé                                                         Γöé
+Γöé  Run the following to update                            Γöé
+Γöé    npm i --save-dev prisma@latest                       Γöé
+Γöé    npm i @prisma/client@latest                          Γöé
+ΓööΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÿ
+  [PASS] PostgreSQL connection - postgresql://reelsmith:***@localhost:5432/reelsmith
+  [PASS] Database tables - prisma db push
+
+== Claude Code
+  [PASS] Claude Code installed - 2.1.288 (Claude Code) (C:\Users\Admin\AppData\Roaming\npm\claude.ps1)
+  [PASS] Claude Code login - Claude subscription (pro)
+  [PASS] No API key set - runs use the subscription
+
+================ ReelSmith setup checklist ================
+[PASS] Folders
+ workspace D:/reel-studio, style D:/my-project/style, storage C:/Users/Admin/reelsmith/storage
+[PASS] Node.js
+ v24.12.0
+[PASS] Git
+ 2.51.2.windows.1
+[PASS] Python
+ Python 3.13.7 (C:\Users\Admin\AppData\Local\Programs\Python\Python313\python.exe)
+[PASS] ffmpeg
+ 9.0.2-full_build-www.gyan.dev (vidstab, vmaf, zscale, libass)
+[FAIL] Python packages
+ ModuleNotFoundError: No module named 'yt_dlp' (run setup without -CheckOnly, or: worker\.venv\Scripts\pip install -r workerequirements.txt)
+[PASS] npm packages
+ installed, Prisma client generated
+[PASS] Workspace files
+ rules.md, CLAUDE.md, tools, edit-reel skill
+[PASS] video-use skill
+ commit b877063
+[PASS] HyperFrames
+ v0.8.143 (cached for npx)
+[PASS] Whisper model
+ 'base' in the Hugging Face cache
+[PASS] Matte model
+ rvm_mobilenetv3_fp32.onnx
+[WARN] Real-ESRGAN
+ not installed; AI upscale is unavailable (everything else works)
+[PASS] PostgreSQL connection
+ postgresql://reelsmith:***@localhost:5432/reelsmith
+[PASS] Database tables
+ prisma db push
+[PASS] Claude Code installed
+ 2.1.288 (Claude Code) (C:\Users\Admin\AppData\Roaming\npm\claude.ps1)
+[PASS] Claude Code login
+ Claude subscription (pro)
+[PASS] No API key set
+ runs use the subscription
+
+16 passed, 1 warnings, 1 failed
+Fix the FAIL items above, then run setup.bat again. Full log: logs\setup.log
+**********************
+Windows PowerShell transcript end
+End time: 20261009131839
+**********************
