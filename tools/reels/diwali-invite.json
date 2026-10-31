@@ -1,0 +1,10 @@
+{
+  "clips": ["IMG_2050.mov"],
+  "out": "out/reel-B-event.mp4",
+  "banner": "DIWALI PARTY  |  1 NOV  |  7 PM",
+  "tag": "invite only",
+  "end_big": "INVITE ONLY",
+  "end_small": "DM me to get in",
+  "end_accent": "1 Nov  |  7 PM",
+  "captions": "diwali-invite.captions.json"
+}
