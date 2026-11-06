@@ -33,6 +33,7 @@ import { useChat, useChatSync } from "@/components/chat/store";
 import { useInsertSync } from "./inserts-store";
 import { useLooksSync } from "./looks-hook";
 import { LooksPanel } from "./panels/LooksPanel";
+import { WORKSPACES, useWorkspace, useWorkspaceConfig, type WorkspaceId } from "@/lib/workspace";
 
 const PANELS = [
   { id: "chat", label: "Chat", icon: MessagesSquare },
@@ -79,6 +80,16 @@ function EditorInner() {
   const setPanel = useEditor((s) => s.setPanel);
   const selection = useEditor((s) => s.selection);
   const [fileOver, setFileOver] = useState(false);
+  const ws = useWorkspaceConfig();
+
+  // The theme goes on <html> so dialogs and popovers (portalled outside the editor) pick it up too.
+  useEffect(() => {
+    document.documentElement.classList.toggle("ws-mono", ws.mono);
+    return () => document.documentElement.classList.remove("ws-mono");
+  }, [ws.mono]);
+  useEffect(() => {
+    if (ws.chatFirst) setPanel("chat");
+  }, [ws.chatFirst, setPanel]);
 
   // On narrow screens the inspector lives in the left panel; jump to it on selection.
   useEffect(() => {
@@ -88,15 +99,16 @@ function EditorInner() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <TopBar />
-      <div className="flex min-h-0 flex-1">
-        <nav className="flex w-14 shrink-0 flex-col items-center gap-1 border-r py-2">
+      {/* Phones: preview on top, the open panel under it, tabs along the bottom. md and up: side rail layout. */}
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <nav className="order-last flex shrink-0 flex-row items-center gap-1 overflow-x-auto border-t px-1 py-1 md:order-none md:w-14 md:flex-col md:overflow-visible md:border-t-0 md:border-r md:px-0 md:py-2">
           {PANELS.map((p) => (
             <button
               key={p.id}
               type="button"
               onClick={() => setPanel(p.id)}
               className={cn(
-                "flex w-12 flex-col items-center gap-0.5 rounded-md py-2 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground",
+                "flex w-12 shrink-0 flex-col items-center gap-0.5 rounded-md py-2 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground",
                 panel === p.id && "bg-muted text-foreground",
                 "narrowOnly" in p && "xl:hidden",
               )}
@@ -106,7 +118,13 @@ function EditorInner() {
             </button>
           ))}
         </nav>
-        <aside className={cn("w-72 shrink-0 border-r lg:w-80", panel === "chat" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
+        <aside
+          className={cn(
+            "order-2 h-[38%] w-full shrink-0 border-t md:order-none md:h-auto md:w-72 md:border-t-0 md:border-r lg:w-80",
+            ws.chatFirst && panel === "chat" && "md:w-96 lg:w-[28rem]",
+            panel === "chat" ? "flex flex-col overflow-hidden" : "overflow-y-auto",
+          )}
+        >
           {panel === "chat" && <ChatPanel projectId={projectId} context="editor" className="h-full" />}
           {panel === "media" && <MediaPanel />}
           {panel === "text" && <TextPanel />}
@@ -119,7 +137,11 @@ function EditorInner() {
           {panel === "inspect" && <Inspector />}
         </aside>
         <main
-          className={cn("relative min-w-0 flex-1 bg-[radial-gradient(ellipse_at_center,rgba(124,58,237,0.08),transparent_70%)] p-3", fileOver && "ring-2 ring-primary ring-inset")}
+          className={cn(
+            "relative min-h-0 min-w-0 flex-1 p-2 md:p-3",
+            ws.mono ? "bg-[radial-gradient(ellipse_at_center,rgba(255,255,255,0.04),transparent_70%)]" : "bg-[radial-gradient(ellipse_at_center,rgba(124,58,237,0.08),transparent_70%)]",
+            fileOver && "ring-2 ring-primary ring-inset",
+          )}
           onDragOver={(e) => {
             if (!hasDroppableImage(e.dataTransfer)) return;
             e.preventDefault();
@@ -145,7 +167,7 @@ function EditorInner() {
           <Inspector />
         </aside>
       </div>
-      <div className="h-[36%] min-h-[210px] shrink-0 border-t">
+      <div className="h-[24%] min-h-[150px] shrink-0 border-t md:h-[36%] md:min-h-[210px]">
         <Timeline />
       </div>
     </div>
@@ -174,7 +196,7 @@ function TopBar() {
   };
 
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b px-2">
+    <header className="flex h-12 shrink-0 items-center gap-2 overflow-x-auto border-b px-2">
       <Button variant="ghost" size="icon" asChild>
         <Link href="/dashboard" aria-label="Back to projects">
           <ArrowLeft />
@@ -190,7 +212,8 @@ function TopBar() {
       />
       <SaveBadge state={save} />
       <CreatorBadge />
-      <div className="ml-auto flex items-center gap-1">
+      <WorkspacePicker />
+      <div className="ml-auto flex shrink-0 items-center gap-1">
         <Tooltip>
           <TooltipTrigger asChild>
             <Button variant="ghost" size="icon" disabled={!canUndo} onClick={undo} aria-label="Undo">
@@ -220,6 +243,27 @@ function TopBar() {
         <ExportDialog />
       </div>
     </header>
+  );
+}
+
+/** Switches the per-person UI preset (theme, layout, shortcuts, quick AI actions); remembered in this browser. */
+function WorkspacePicker() {
+  const id = useWorkspace((s) => s.id);
+  const set = useWorkspace((s) => s.set);
+  return (
+    <select
+      value={id}
+      onChange={(e) => set(e.target.value as WorkspaceId)}
+      aria-label="Workspace"
+      title="Workspace: layout, colours, shortcuts and quick AI actions"
+      className="h-7 rounded-md border border-input bg-transparent px-1.5 text-xs text-muted-foreground hover:text-foreground"
+    >
+      {Object.values(WORKSPACES).map((w) => (
+        <option key={w.id} value={w.id} className="bg-popover text-popover-foreground">
+          {w.label}
+        </option>
+      ))}
+    </select>
   );
 }
 

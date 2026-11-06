@@ -6,6 +6,7 @@ import { api, ApiError } from "@/lib/client/api";
 import type { Timeline } from "@/lib/timeline/types";
 import { useEditor } from "./store";
 import { deleteSelected, duplicateSelected, splitSelected } from "./timeline/Timeline";
+import { WORKSPACES, useWorkspace } from "@/lib/workspace";
 
 /** Debounced autosave of the timeline JSON (every change, ~1.5 s after the last one). */
 export function useAutosave() {
@@ -87,6 +88,22 @@ export function useShortcuts() {
       const s = useEditor.getState();
       const mod = e.metaKey || e.ctrlKey;
       const k = e.key.toLowerCase();
+      // Premiere-style keys (workspace setting): C or Ctrl/Cmd+K splits, J/K/L step back / pause / play.
+      if (WORKSPACES[useWorkspace.getState().id]?.premiereKeys) {
+        if ((mod && k === "k") || (!mod && k === "c")) {
+          e.preventDefault();
+          splitSelected();
+          return;
+        }
+        if (!mod && (k === "j" || k === "k" || k === "l")) {
+          e.preventDefault();
+          if (k === "j") {
+            s.setPlaying(false);
+            s.setPlayhead(s.playhead - 1);
+          } else s.setPlaying(k === "l");
+          return;
+        }
+      }
       if (mod && k === "z") {
         e.preventDefault();
         if (e.shiftKey) s.redo();

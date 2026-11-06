@@ -15,6 +15,7 @@ import { applyMessageOps, busyJobs, useChat, type ChatMsg } from "./store";
 import { StillsReview, ConflictList } from "./StillsReview";
 import { RenderDoneCard, RuleCheckCard, RuleConflictCard, RuleNotesCard } from "./RuleCards";
 import { useVoiceNote } from "./voice";
+import { useWorkspaceConfig } from "@/lib/workspace";
 
 const TOPICS = ["captions", "text", "hook", "pacing", "zooms", "transitions", "layout", "grade", "color", "sound", "music", "quality", "delivery", "workflow", "other"];
 const SOURCE_LABEL: Record<string, string> = { voice: "🎙 voice note", render: "notes on a render", stills: "notes on the stills", cut: "notes on the cut", ai_edit: "AI edit" };
@@ -43,6 +44,7 @@ export function ChatPanel({ projectId, context, getPlan, onSent, className }: { 
   const running = busyJobs(state);
   const live = running.find((j) => j.status === "running") ?? running[0] ?? null;
   const voice = useVoiceNote(projectId);
+  const quick = useWorkspaceConfig().quickPrompts;
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
@@ -99,6 +101,22 @@ export function ChatPanel({ projectId, context, getPlan, onSent, className }: { 
       </div>
 
       <div className="space-y-2 border-t p-2">
+        {context === "editor" && quick.length > 0 && (
+          <div className="flex gap-1 overflow-x-auto pb-0.5 md:flex-wrap" aria-label="Quick AI edits">
+            {quick.map((q) => (
+              <button
+                key={q.label}
+                type="button"
+                disabled={sending}
+                onClick={() => send(q.prompt)}
+                title={q.prompt}
+                className="shrink-0 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                {q.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex flex-wrap gap-1">
           {CHIPS.map((c) => (
             <button
