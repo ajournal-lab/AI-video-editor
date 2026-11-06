@@ -327,3 +327,16 @@ model RuleCheck {
   @@index([projectId, createdAt])
   @@index([subjectJobId])
 }
+
+/// A PC in the render pool (worker/pool.py). The worker upserts its row every 15 s; older than 45 s means offline.
+model PoolNode {
+  id        String   @id // POOL_NODE_ID, or the computer name
+  name      String // shown in the app, e.g. "Mani's PC"
+  host      String
+  status    String   @default("idle") // idle | busy
+  job       String? // what it is doing now, e.g. "Exporting 1080p"
+  startedAt DateTime @default(now())
+  lastSeen  DateTime @default(now())
+
+  @@index([lastSeen])
+}

@@ -10,7 +10,8 @@
     "lint": "eslint",
     "postinstall": "prisma generate",
     "db:push": "prisma db push",
-    "agent": "tsx agent/runner.ts"
+    "agent": "tsx agent/runner.ts",
+    "pool:code": "node scripts/pool-code.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1142.0",

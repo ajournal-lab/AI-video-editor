@@ -132,6 +132,21 @@ worker/.venv/bin/python worker/main.py    # terminal 3
 
 On startup the runner checks that Claude Code is installed, that it's logged in with a subscription (`claude auth status`), and that the skills are present. The app shows a banner when any of these fails.
 
+## Render pool (team PCs share the heavy work)
+
+Exports, transcription and animated inserts can run on any team PC. Each PC runs the worker against the same hosted
+database and file storage; jobs are claimed so two PCs never take the same one, and the **Pool** page shows who is
+online and what each PC is doing.
+
+1. On the main install, use a hosted Postgres (e.g. Neon) for `DATABASE_URL` and set the `R2_*` storage settings.
+2. Run `npm run pool:code` and send the printed join code privately to a teammate. It contains the database and storage
+   logins, so only share it with people you trust.
+3. On the teammate's PC: run `setup.bat` once, then double-click **`join-pool.bat`** and paste the code (it is saved in
+   `.env.pool`; `join-pool.bat -Reset` forgets it). Closing the window leaves the pool.
+
+AI edits (`npm run agent`) still run only on the main install: their results are written to local project folders, and
+each runner uses the Claude subscription logged in on that PC.
+
 ## Environment variables
 
 | Variable | Needed by | Description |

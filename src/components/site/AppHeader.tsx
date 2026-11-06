@@ -20,6 +20,9 @@ export function AppHeader({ email }: { email?: string | null }) {
           <Link href="/jobs" className="rounded-md px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground sm:px-2.5">
             Jobs
           </Link>
+          <Link href="/pool" className="rounded-md px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground sm:px-2.5">
+            Pool
+          </Link>
           <Link href="/creators" className="rounded-md px-2 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground sm:px-2.5">
             Creators
           </Link>

@@ -34,6 +34,7 @@ _load_env()
 
 import db  # noqa: E402
 import insert_pool  # noqa: E402
+import pool  # noqa: E402
 import render  # noqa: E402
 import storage  # noqa: E402
 from media import normalize_audio, peaks, probe  # noqa: E402
@@ -44,6 +45,7 @@ POLL = float(os.environ.get("WORKER_POLL_SECONDS", "2"))
 
 def process_voice(conn, voice):
     print(f"[voice] {voice['id']} project={voice['projectId']}", flush=True)
+    pool.busy("Transcribing a voiceover")
     work = Path(tempfile.mkdtemp(prefix="rs-voice-"))
     try:
         src = storage.fetch(voice["url"], work / "in")
@@ -63,11 +65,13 @@ def process_voice(conn, voice):
         traceback.print_exc()
         db.voice_failed(conn, voice, f"{type(exc).__name__}: {exc}")
     finally:
+        pool.idle()
         shutil.rmtree(work, ignore_errors=True)
 
 
 def process_render(conn, job):
     print(f"[render] {job['id']} project={job['projectId']} {job['quality']}", flush=True)
+    pool.busy(f"Exporting {job['quality']}")
     work = Path(tempfile.mkdtemp(prefix="rs-render-"))
     try:
         tl = db.version_json(conn, job["versionId"])
@@ -96,6 +100,7 @@ def process_render(conn, job):
         traceback.print_exc()
         db.render_failed(conn, job, f"{type(exc).__name__}: {exc}")
     finally:
+        pool.idle()
         insert_pool.render_active.clear()
         if not os.environ.get("KEEP_RENDER_DIRS"):
             shutil.rmtree(work, ignore_errors=True)
@@ -108,6 +113,7 @@ def main():
     print(f"[worker] storage={storage._driver()} poll={POLL}s inserts<={insert_pool.PARALLEL} parallel", flush=True)
     if not once:
         insert_pool.start()
+        pool.start()
     conn = None
     while True:
         try:
