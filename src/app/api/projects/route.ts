@@ -5,7 +5,7 @@ import { createLinkAsset } from "@/server/audiolink";
 import { MODES, startPlan, validateInputs, type ModeInputs } from "@/server/modes";
 import { normHandle, readCreatorStyle } from "@/server/style";
 
-export const maxDuration = 600; // a pasted sound link is downloaded before the plan starts
+export const maxDuration = 300; // Vercel Hobby limit; a pasted sound link is downloaded before the plan starts (no limit on a local install)
 
 export const GET = route(async () => {
   const userId = await requireUserId();
