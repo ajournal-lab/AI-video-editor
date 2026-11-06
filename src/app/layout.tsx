@@ -7,9 +7,9 @@ import "./globals.css";
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "ReelSmith — voice to ready-to-post video",
+  title: "AJOURNALLAB Studio — voice to ready-to-post video",
   description:
-    "Upload or record your voiceover. ReelSmith transcribes it, cuts a first edit with matching visuals and word-by-word captions, then gives you a real timeline editor with AI edit commands.",
+    "Upload or record your voiceover. AJOURNALLAB Studio transcribes it, cuts a first edit with matching visuals and word-by-word captions, then gives you a real timeline editor with AI edit commands.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

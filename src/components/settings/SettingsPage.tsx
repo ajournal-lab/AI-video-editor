@@ -176,7 +176,7 @@ function CloudForm({ repo, keep, tokenSet, onSave }: { repo: string; keep: boole
         <Switch checked={keep} onCheckedChange={(v) => onSave({ repo: r, keep: v })} />
       </label>
       <p className="text-xs text-muted-foreground">
-        The repo must already exist and be <b>private</b>: ReelSmith never creates repos and refuses public ones. Token: {tokenSet ? "CLOUD_RENDER_TOKEN is set in .env." : <span className="text-amber-300">add CLOUD_RENDER_TOKEN (fine-grained, this repo only: Contents, Actions and Workflows read/write, Metadata read) to .env.</span>}
+        The repo must already exist and be <b>private</b>: AJOURNALLAB Studio never creates repos and refuses public ones. Token: {tokenSet ? "CLOUD_RENDER_TOKEN is set in .env." : <span className="text-amber-300">add CLOUD_RENDER_TOKEN (fine-grained, this repo only: Contents, Actions and Workflows read/write, Metadata read) to .env.</span>}
       </p>
     </div>
   );

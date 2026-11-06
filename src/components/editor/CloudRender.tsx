@@ -180,7 +180,7 @@ export function CloudRender({ projectId, quality, blocked, onRendered }: { proje
                         </li>
                       ))}
                     </ul>
-                    <p>GitHub Actions renders {quality} with the same engine as a local export, then ReelSmith downloads the video into this project.</p>
+                    <p>GitHub Actions renders {quality} with the same engine as a local export, then AJOURNALLAB Studio downloads the video into this project.</p>
                     <p className="text-muted-foreground">{minutesText(prep.minutes)}. A short reel usually takes 3-10 runner minutes.</p>
                     {prep.changedSinceStills && <p className="text-amber-300">The timeline changed after you approved the stills.</p>}
                     <label className="flex items-center justify-between gap-3 rounded-md border p-2">

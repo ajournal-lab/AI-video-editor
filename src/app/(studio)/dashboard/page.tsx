@@ -2,7 +2,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/server/db";
 import { ProjectGrid, type ProjectCard } from "@/components/dashboard/ProjectGrid";
 
-export const metadata = { title: "Projects · ReelSmith" };
+export const metadata = { title: "Projects · AJOURNALLAB Studio" };
 
 export default async function DashboardPage() {
   const session = await auth();

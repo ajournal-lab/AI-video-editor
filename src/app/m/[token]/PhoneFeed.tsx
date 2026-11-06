@@ -32,7 +32,7 @@ export function PhoneFeed({ token }: { token: string }) {
 
   return (
     <main className="mx-auto min-h-dvh max-w-md bg-background px-3 py-4 text-foreground">
-      <h1 className="mb-1 text-lg font-semibold">ReelSmith previews</h1>
+      <h1 className="mb-1 text-lg font-semibold">AJOURNALLAB Studio previews</h1>
       <p className="mb-4 text-xs text-muted-foreground">Quick-review copies (720p). The full-quality export is in the app.</p>
       {error && <p className="text-sm text-red-400">{error}</p>}
       {!rows && !error && <p className="text-sm text-muted-foreground">Loading…</p>}

@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { AuthForm } from "@/components/site/AuthForm";
 
-export const metadata = { title: "Sign in · ReelSmith" };
+export const metadata = { title: "Sign in · AJOURNALLAB Studio" };
 
 export default function LoginPage() {
   return (

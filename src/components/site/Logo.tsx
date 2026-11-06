@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { BRAND } from "@/lib/brand";
 
 export function Logo({ href = "/" }: { href?: string }) {
   return (
@@ -9,7 +10,7 @@ export function Logo({ href = "/" }: { href?: string }) {
           <rect x="3" y="6" width="2.4" height="12" rx="1.2" />
         </svg>
       </span>
-      ReelSmith
+      {BRAND}
     </Link>
   );
 }

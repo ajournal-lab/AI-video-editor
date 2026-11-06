@@ -75,7 +75,7 @@ export default async function Landing() {
               Talk. Get a <span className="text-gradient">ready-to-post video</span>. Then make it yours.
             </h1>
             <p className="mx-auto mt-6 max-w-xl text-lg text-muted-foreground lg:mx-0">
-              Record your voiceover and ReelSmith cuts a first edit with matching visuals and word-by-word captions — then hands you a real timeline editor with unlimited edits.
+              Record your voiceover and AJOURNALLAB Studio cuts a first edit with matching visuals and word-by-word captions — then hands you a real timeline editor with unlimited edits.
             </p>
             <div className="mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-center lg:justify-start">
               <Button asChild size="lg" className="brand-gradient px-6 text-white">
@@ -161,7 +161,7 @@ export default async function Landing() {
         </div>
       </section>
 
-      <footer className="border-t py-8 text-center text-xs text-muted-foreground">© {new Date().getFullYear()} ReelSmith</footer>
+      <footer className="border-t py-8 text-center text-xs text-muted-foreground">© {new Date().getFullYear()} AJOURNALLAB</footer>
     </div>
   );
 }

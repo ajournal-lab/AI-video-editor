@@ -11,7 +11,7 @@ import { PlanScreen } from "@/components/plan/PlanScreen";
 const PLAN_MODES = ["music", "talking_head", "best_take", "voiceover_broll", "auto_clip"];
 const PLAN_STATUSES = ["draft", "planning", "review", "plan_failed"]; // draft = started in the chat, nothing planned yet
 
-export const metadata = { title: "Editor · ReelSmith" };
+export const metadata = { title: "Editor · AJOURNALLAB Studio" };
 
 export default async function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await auth();

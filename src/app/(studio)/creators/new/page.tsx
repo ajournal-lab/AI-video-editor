@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { CreatorForm } from "@/components/creators/CreatorForm";
 
-export const metadata = { title: "New creator profile · ReelSmith" };
+export const metadata = { title: "New creator profile · AJOURNALLAB Studio" };
 
 export default function Page() {
   return (
@@ -13,7 +13,7 @@ export default function Page() {
         </Link>
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">New creator profile</h1>
-          <p className="text-sm text-muted-foreground">Paste 5 public videos. ReelSmith measures their hooks, cut rhythm, captions, zooms, sound cues and layout, then checks how consistent they are.</p>
+          <p className="text-sm text-muted-foreground">Paste 5 public videos. AJOURNALLAB Studio measures their hooks, cut rhythm, captions, zooms, sound cues and layout, then checks how consistent they are.</p>
         </div>
       </div>
       <CreatorForm />

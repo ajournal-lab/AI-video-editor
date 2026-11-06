@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { AuthForm } from "@/components/site/AuthForm";
 
-export const metadata = { title: "Create account · ReelSmith" };
+export const metadata = { title: "Create account · AJOURNALLAB Studio" };
 
 export default function SignupPage() {
   return (
